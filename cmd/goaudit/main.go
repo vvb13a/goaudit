@@ -10,16 +10,16 @@ import (
 	"github.com/vvb13a/goaudit/data"
 	"github.com/vvb13a/goaudit/db"
 	"github.com/vvb13a/goaudit/engine"
-	"github.com/vvb13a/goaudit/tui"
+	"github.com/vvb13a/goaudit/internal/display/tui"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 func main() {
-	cfgManager := config.NewManager("./config.json")
+	cfgManager := config.NewManager("./storage/config.json")
 	cfg := cfgManager.Get()
 
-	database, err := db.Open("./inspection.db")
+	database, err := db.Open("./storage/goaudit.db")
 	if err != nil {
 		log.Fatalf("Failed to open SQLite database: %v", err)
 	}
