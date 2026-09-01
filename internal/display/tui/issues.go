@@ -12,9 +12,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-func GetSortedIssues(insp *data.Inspection) []data.Issue {
+func GetSortedIssues(a *data.Audit) []data.Issue {
 	var allIssues []data.Issue
-	for _, r := range insp.Reports {
+	for _, r := range a.Reports {
 		allIssues = append(allIssues, r.Issues...)
 	}
 
@@ -54,7 +54,7 @@ func BuildIssuesTable(issues []data.Issue) table.Model {
 
 func (m Model) renderIssuesView() string {
 	var body strings.Builder
-	header := fmt.Sprintf("🔍 Inspection Issues: %s (%s)", m.selectedInsp.PlanName, m.selectedInsp.ChecklistName)
+	header := fmt.Sprintf("🔍 Audit Issues: %s (%s)", m.selectedAudit.PlanName, m.selectedAudit.ChecklistName)
 	body.WriteString(TitleStyle.Render(header))
 	body.WriteString("\n\n")
 

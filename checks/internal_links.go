@@ -151,7 +151,7 @@ func (c *InternalLinksCheck) validatePath(ctx context.Context, resolvedURL strin
 	if err != nil {
 		return false, 0, err.Error()
 	}
-	req.Header.Set("User-Agent", "Go-Inspection-Engine/1.0")
+	req.Header.Set("User-Agent", "Go-Audit-Engine/1.0")
 
 	resp, err := c.Client.Do(req)
 	if err != nil {

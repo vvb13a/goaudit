@@ -29,7 +29,7 @@ func main() {
 	fetcher := engine.NewFetcher().
 		WithTimeout(cfg.HTTPTimeout()).
 		WithUserAgent(cfg.UserAgent).
-		WithHeader("X-Inspection-Engine", "true")
+		WithHeader("X-Audit-Engine", "true")
 
 	allChecks := []data.Check{
 		checks.NewStatusCodeCheck(),
@@ -70,9 +70,9 @@ func main() {
 	}
 
 	plans, _ := database.ListPlans()
-	inspections, _ := database.ListInspections()
+	audits, _ := database.ListAudits()
 
-	app := tui.New(database, fetcher, cfg, allChecks, inspections, checklists, plans)
+	app := tui.New(database, fetcher, cfg, allChecks, audits, checklists, plans)
 	program := tea.NewProgram(app, tea.WithAltScreen())
 
 	if _, err := program.Run(); err != nil {

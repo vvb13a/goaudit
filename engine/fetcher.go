@@ -25,7 +25,7 @@ func NewFetcher() *Fetcher {
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		userAgent: "Go-Inspection-Engine/1.0",
+		userAgent: "Go-Audit-Engine/1.0",
 		headers:   make(map[string]string),
 	}
 }

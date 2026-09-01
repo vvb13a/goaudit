@@ -20,13 +20,13 @@ import (
 type ViewState int
 
 const (
-	ViewInspectionsTab ViewState = iota
+	ViewAuditsTab ViewState = iota
 	ViewChecklistsTab
 	ViewPlansTab
 	ViewChecklistForm
 	ViewPlanForm
 	ViewPromptURL
-	ViewInspecting
+	ViewAuditing
 	ViewIssues
 	ViewIssueDetail
 	ViewConfirmDelete
@@ -46,15 +46,15 @@ type Model struct {
 	fetcher           *engine.Fetcher
 	cfg               *config.Config
 	allChecks         []data.Check
-	inspections       []*data.Inspection
+	audits       []*data.Audit
 	checklists        []*data.Checklist
 	plans             []*data.Plan
 	defaultChecklist  *data.Checklist
-	selectedInsp      *data.Inspection
+	selectedAudit      *data.Audit
 	currentIssues     []data.Issue
 	selectedIssue     *data.Issue
 	pendingDel        pendingDelete
-	inspectionsTable  table.Model
+	auditsTable  table.Model
 	checklistsTable   table.Model
 	plansTable        table.Model
 	issuesTable       table.Model
@@ -65,8 +65,8 @@ type Model struct {
 	checklistForm     CreateChecklistForm
 	planForm          CreatePlanForm
 	statusMsg         string
-	inspectTitle      string
-	currentInspectURL string
+	auditTitle      string
+	currentAuditURL string
 	completedCount    int
 	totalCount        int
 }
@@ -76,7 +76,7 @@ func New(
 	fetcher *engine.Fetcher,
 	cfg *config.Config,
 	allChecks []data.Check,
-	inspections []*data.Inspection,
+	audits []*data.Audit,
 	checklists []*data.Checklist,
 	plans []*data.Plan,
 ) Model {
@@ -98,16 +98,16 @@ func New(
 	)
 
 	return Model{
-		state:            ViewInspectionsTab,
+		state:            ViewAuditsTab,
 		database:         database,
 		fetcher:          fetcher,
 		cfg:              cfg,
 		allChecks:        allChecks,
-		inspections:      inspections,
+		audits:      audits,
 		checklists:       checklists,
 		plans:            plans,
 		defaultChecklist: defaultChk,
-		inspectionsTable: BuildInspectionsTable(inspections),
+		auditsTable: BuildAuditsTable(audits),
 		checklistsTable:  BuildChecklistsTable(checklists),
 		plansTable:       BuildPlansTable(plans),
 		textInput:        NewURLInput(),
@@ -130,26 +130,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Global Tab Switching across Tab 1, 2, 3
-		if m.state == ViewInspectionsTab || m.state == ViewChecklistsTab || m.state == ViewPlansTab {
+		if m.state == ViewAuditsTab || m.state == ViewChecklistsTab || m.state == ViewPlansTab {
 			switch msg.String() {
 			case "tab":
 				switch m.state {
-				case ViewInspectionsTab:
+				case ViewAuditsTab:
 					m.state = ViewChecklistsTab
 				case ViewChecklistsTab:
 					m.state = ViewPlansTab
 				case ViewPlansTab:
-					m.state = ViewInspectionsTab
+					m.state = ViewAuditsTab
 				}
 				m.statusMsg = ""
 				return m, nil
 
 			case "shift+tab", "backtab":
 				switch m.state {
-				case ViewInspectionsTab:
+				case ViewAuditsTab:
 					m.state = ViewPlansTab
 				case ViewChecklistsTab:
-					m.state = ViewInspectionsTab
+					m.state = ViewAuditsTab
 				case ViewPlansTab:
 					m.state = ViewChecklistsTab
 				}
@@ -157,7 +157,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "1":
-				m.state = ViewInspectionsTab
+				m.state = ViewAuditsTab
 				m.statusMsg = ""
 				return m, nil
 			case "2":
@@ -173,9 +173,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch m.state {
 		// -------------------------------------------------------------
-		// TAB 1: INSPECTIONS
+		// TAB 1: AUDITS
 		// -------------------------------------------------------------
-		case ViewInspectionsTab:
+		case ViewAuditsTab:
 			switch msg.String() {
 			case "q":
 				return m, tea.Quit
@@ -188,30 +188,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, textinput.Blink
 
 			case "r":
-				if len(m.inspections) > 0 {
-					idx := m.inspectionsTable.Cursor()
-					if idx < len(m.inspections) {
-						insp := m.inspections[idx]
+				if len(m.audits) > 0 {
+					idx := m.auditsTable.Cursor()
+					if idx < len(m.audits) {
+						aud := m.audits[idx]
 						var urls []string
-						for _, rep := range insp.Reports {
+						for _, rep := range aud.Reports {
 							urls = append(urls, rep.URL)
 						}
-						return m.startInspectionRun(insp.PlanName, urls)
+						return m.startAuditRun(aud.PlanName, urls)
 					}
 				}
 				return m, nil
 
 			case "d", "x":
-				if len(m.inspections) > 0 {
-					idx := m.inspectionsTable.Cursor()
-					if idx < len(m.inspections) {
-						insp := m.inspections[idx]
+				if len(m.audits) > 0 {
+					idx := m.auditsTable.Cursor()
+					if idx < len(m.audits) {
+						aud := m.audits[idx]
 						m.pendingDel = pendingDelete{
-							itemType: "inspection",
-							id:       insp.ID,
-							name:     insp.PlanName,
+							itemType: "audit",
+							id:       aud.ID,
+							name:     aud.PlanName,
 							index:    idx,
-							returnTo: ViewInspectionsTab,
+							returnTo: ViewAuditsTab,
 						}
 						m.state = ViewConfirmDelete
 					}
@@ -219,11 +219,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "right", "enter", "l":
-				if len(m.inspections) > 0 {
-					idx := m.inspectionsTable.Cursor()
-					if idx < len(m.inspections) {
-						m.selectedInsp = m.inspections[idx]
-						m.currentIssues = GetSortedIssues(m.selectedInsp)
+				if len(m.audits) > 0 {
+					idx := m.auditsTable.Cursor()
+					if idx < len(m.audits) {
+						m.selectedAudit = m.audits[idx]
+						m.currentIssues = GetSortedIssues(m.selectedAudit)
 						m.issuesTable = BuildIssuesTable(m.currentIssues)
 						m.state = ViewIssues
 					}
@@ -309,7 +309,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					idx := m.plansTable.Cursor()
 					if idx < len(m.plans) && len(m.plans[idx].URLs) > 0 {
 						targetPlan := m.plans[idx]
-						return m.startInspectionRun(targetPlan.Name, targetPlan.URLs)
+						return m.startAuditRun(targetPlan.Name, targetPlan.URLs)
 					}
 				}
 				return m, nil
@@ -357,11 +357,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "y", "Y":
 				switch m.pendingDel.itemType {
-				case "inspection":
-					_ = m.database.DeleteInspection(m.pendingDel.id)
-					m.inspections, _ = m.database.ListInspections()
-					m.inspectionsTable = BuildInspectionsTable(m.inspections)
-					m.statusMsg = SuccessStyle.Render(fmt.Sprintf("🗑️ Deleted inspection '%s'", m.pendingDel.name))
+				case "audit":
+					_ = m.database.DeleteAudit(m.pendingDel.id)
+					m.audits, _ = m.database.ListAudits()
+					m.auditsTable = BuildAuditsTable(m.audits)
+					m.statusMsg = SuccessStyle.Render(fmt.Sprintf("🗑️ Deleted audit '%s'", m.pendingDel.name))
 
 				case "checklist":
 					_ = m.database.DeleteChecklist(m.pendingDel.id)
@@ -524,7 +524,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ViewPromptURL:
 			switch msg.Type {
 			case tea.KeyEsc:
-				m.state = ViewInspectionsTab
+				m.state = ViewAuditsTab
 				return m, nil
 			case tea.KeyEnter:
 				targetURL := strings.TrimSpace(m.textInput.Value())
@@ -534,7 +534,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
 					targetURL = "https://" + targetURL
 				}
-				return m.startInspectionRun(targetURL, []string{targetURL})
+				return m.startAuditRun(targetURL, []string{targetURL})
 			}
 			m.textInput, cmd = m.textInput.Update(msg)
 			return m, cmd
@@ -556,7 +556,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case "left", "esc", "h":
-				m.state = ViewInspectionsTab
+				m.state = ViewAuditsTab
 				return m, nil
 			}
 
@@ -574,7 +574,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// PROGRESS STREAMING & RESULTS
 	// -------------------------------------------------------------
 	case ProgressMsg:
-		m.currentInspectURL = msg.CurrentURL
+		m.currentAuditURL = msg.CurrentURL
 		m.completedCount = msg.Completed
 		m.totalCount = msg.Total
 
@@ -594,32 +594,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.progressBar = progressModel.(progress.Model)
 		return m, cmd
 
-	case InspectionResultMsg:
+	case AuditResultMsg:
 		if msg.Err != nil {
-			m.statusMsg = ErrorStyle.Render(fmt.Sprintf("❌ Inspection failed: %v", msg.Err))
-			m.state = ViewInspectionsTab
+			m.statusMsg = ErrorStyle.Render(fmt.Sprintf("❌ Audit failed: %v", msg.Err))
+			m.state = ViewAuditsTab
 			return m, nil
 		}
 
-		_ = m.database.SaveInspection(msg.Inspection)
-		m.inspections, _ = m.database.ListInspections()
-		m.inspectionsTable = BuildInspectionsTable(m.inspections)
-		m.inspectionsTable.SetCursor(0)
-		m.state = ViewInspectionsTab
-		m.statusMsg = SuccessStyle.Render(fmt.Sprintf("✅ Finished inspection for '%s' (%d endpoints in %v)", msg.Inspection.PlanName, msg.Inspection.TotalEndpoints, msg.Inspection.Duration))
+		_ = m.database.SaveAudit(msg.Audit)
+		m.audits, _ = m.database.ListAudits()
+		m.auditsTable = BuildAuditsTable(m.audits)
+		m.auditsTable.SetCursor(0)
+		m.state = ViewAuditsTab
+		m.statusMsg = SuccessStyle.Render(fmt.Sprintf("✅ Finished audit for '%s' (%d endpoints in %v)", msg.Audit.PlanName, msg.Audit.TotalEndpoints, msg.Audit.Duration))
 		return m, nil
 	}
 
 	switch m.state {
-	case ViewInspectionsTab:
-		m.inspectionsTable, cmd = m.inspectionsTable.Update(msg)
+	case ViewAuditsTab:
+		m.auditsTable, cmd = m.auditsTable.Update(msg)
 	case ViewChecklistsTab:
 		m.checklistsTable, cmd = m.checklistsTable.Update(msg)
 	case ViewPlansTab:
 		m.plansTable, cmd = m.plansTable.Update(msg)
 	case ViewPromptURL:
 		m.textInput, cmd = m.textInput.Update(msg)
-	case ViewInspecting:
+	case ViewAuditing:
 		m.spinner, cmd = m.spinner.Update(msg)
 	case ViewIssues:
 		m.issuesTable, cmd = m.issuesTable.Update(msg)
@@ -628,12 +628,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m *Model) startInspectionRun(planName string, urls []string) (tea.Model, tea.Cmd) {
-	m.inspectTitle = planName
-	m.currentInspectURL = "Resolving targets..."
+func (m *Model) startAuditRun(planName string, urls []string) (tea.Model, tea.Cmd) {
+	m.auditTitle = planName
+	m.currentAuditURL = "Resolving targets..."
 	m.completedCount = 0
 	m.totalCount = len(urls)
-	m.state = ViewInspecting
+	m.state = ViewAuditing
 	m.statusMsg = ""
 
 	_ = m.progressBar.SetPercent(0)
@@ -667,13 +667,13 @@ func (m Model) buildActiveRunner() *engine.Runner {
 }
 
 func (m Model) renderTabs() string {
-	tab1 := InactiveTabStyle.Render("1: Inspections")
+	tab1 := InactiveTabStyle.Render("1: Audits")
 	tab2 := InactiveTabStyle.Render("2: Checklists")
 	tab3 := InactiveTabStyle.Render("3: Plans")
 
 	switch m.state {
-	case ViewInspectionsTab:
-		tab1 = ActiveTabStyle.Render("1: Inspections")
+	case ViewAuditsTab:
+		tab1 = ActiveTabStyle.Render("1: Audits")
 	case ViewChecklistsTab:
 		tab2 = ActiveTabStyle.Render("2: Checklists")
 	case ViewPlansTab:
@@ -690,8 +690,8 @@ func (m Model) renderTabs() string {
 
 func (m Model) View() string {
 	switch m.state {
-	case ViewInspectionsTab:
-		return m.renderTabs() + "\n\n" + m.renderInspectionsTab()
+	case ViewAuditsTab:
+		return m.renderTabs() + "\n\n" + m.renderAuditsTab()
 	case ViewChecklistsTab:
 		return m.renderTabs() + "\n\n" + m.renderChecklistsTab()
 	case ViewPlansTab:
@@ -704,8 +704,8 @@ func (m Model) View() string {
 		return m.renderPlanFormView()
 	case ViewPromptURL:
 		return m.renderPromptView()
-	case ViewInspecting:
-		return m.renderInspectingView()
+	case ViewAuditing:
+		return m.renderAuditingView()
 	case ViewIssues:
 		return m.renderIssuesView()
 	case ViewIssueDetail:
@@ -733,14 +733,14 @@ func (m Model) renderConfirmDeleteView() string {
 	return body.String()
 }
 
-func (m Model) renderInspectingView() string {
+func (m Model) renderAuditingView() string {
 	var body strings.Builder
 
-	header := fmt.Sprintf("⏳ Inspecting Plan: %s", m.inspectTitle)
+	header := fmt.Sprintf("⏳ Auditing Plan: %s", m.auditTitle)
 	body.WriteString(TitleStyle.Render(header))
 	body.WriteString("\n\n")
 
-	body.WriteString(fmt.Sprintf("%s Current Target: %s\n\n", m.spinner.View(), m.currentInspectURL))
+	body.WriteString(fmt.Sprintf("%s Current Target: %s\n\n", m.spinner.View(), m.currentAuditURL))
 	body.WriteString(m.progressBar.View())
 	body.WriteString("\n\n")
 

@@ -27,7 +27,7 @@ func DefaultConfig() *Config {
 		MaxConcurrency:  5,
 		RequestDelayMs:  100,
 		HTTPTimeoutSec:  10,
-		UserAgent:       "Go-Inspection-Engine/1.0 (AuditBot; +https://example.com/bot)",
+		UserAgent:       "Go-Audit-Engine/1.0 (AuditBot; +https://example.com/bot)",
 		MaxSitemapDepth: 3,
 		LinkCacheTTLMin: 10,
 	}

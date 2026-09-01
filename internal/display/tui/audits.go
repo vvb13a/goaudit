@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 )
 
-func BuildInspectionsTable(inspections []*data.Inspection) table.Model {
+func BuildAuditsTable(audits []*data.Audit) table.Model {
 	columns := []table.Column{
 		{Title: "Plan / Target", Width: 26},
 		{Title: "Checklist", Width: 18},
@@ -23,16 +23,16 @@ func BuildInspectionsTable(inspections []*data.Inspection) table.Model {
 	}
 
 	var rows []table.Row
-	for _, insp := range inspections {
+	for _, a := range audits {
 		rows = append(rows, table.Row{
-			insp.PlanName,
-			insp.ChecklistName,
-			fmt.Sprintf("%d", insp.TotalEndpoints),
-			fmt.Sprintf("%d", insp.PassedCount),
-			fmt.Sprintf("%d", insp.FailedCount),
-			string(insp.HighestSeverity),
-			insp.Duration.String(),
-			insp.StartedAt.Format("01-02 15:04"),
+			a.PlanName,
+			a.ChecklistName,
+			fmt.Sprintf("%d", a.TotalEndpoints),
+			fmt.Sprintf("%d", a.PassedCount),
+			fmt.Sprintf("%d", a.FailedCount),
+			string(a.HighestSeverity),
+			a.Duration.String(),
+			a.StartedAt.Format("01-02 15:04"),
 		})
 	}
 
@@ -54,12 +54,12 @@ func NewURLInput() textinput.Model {
 	return ti
 }
 
-func (m Model) renderInspectionsTab() string {
+func (m Model) renderAuditsTab() string {
 	var body strings.Builder
-	if len(m.inspections) == 0 {
-		body.WriteString(BaseStyle.Render("No inspections found. Press 'n' for a quick URL inspection, or switch to 'Plans' with Tab!"))
+	if len(m.audits) == 0 {
+		body.WriteString(BaseStyle.Render("No audits found. Press 'n' for a quick URL audit, or switch to 'Plans' with Tab!"))
 	} else {
-		body.WriteString(BaseStyle.Render(m.inspectionsTable.View()))
+		body.WriteString(BaseStyle.Render(m.auditsTable.View()))
 	}
 	if m.statusMsg != "" {
 		body.WriteString("\n" + m.statusMsg)
@@ -70,7 +70,7 @@ func (m Model) renderInspectionsTab() string {
 
 func (m Model) renderPromptView() string {
 	var body strings.Builder
-	body.WriteString(TitleStyle.Render("🚀 Quick Inspection"))
+	body.WriteString(TitleStyle.Render("🚀 Quick Audit"))
 	body.WriteString("\n\n")
 	body.WriteString("Enter Target URL:\n\n")
 	body.WriteString(m.textInput.View())

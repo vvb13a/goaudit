@@ -16,9 +16,9 @@ type ProgressMsg struct {
 	Total      int
 }
 
-type InspectionResultMsg struct {
-	Inspection *data.Inspection
-	Err        error
+type AuditResultMsg struct {
+	Audit *data.Audit
+	Err   error
 }
 
 func WaitForProgress(ch <-chan tea.Msg) tea.Cmd {
@@ -53,10 +53,10 @@ func RunPlanWithProgress(
 				}
 			}
 
-			insp, err := runner.InspectPlan(ctx, planName, rawURLs, checklistName, progressCallback)
-			ch <- InspectionResultMsg{
-				Inspection: insp,
-				Err:        err,
+			aud, err := runner.AuditPlan(ctx, planName, rawURLs, checklistName, progressCallback)
+			ch <- AuditResultMsg{
+				Audit: aud,
+				Err:   err,
 			}
 		}()
 

@@ -52,7 +52,7 @@ func (db *DB) migrate() error {
 		created_at DATETIME NOT NULL
 	);
 
-	CREATE TABLE IF NOT EXISTS inspections (
+	CREATE TABLE IF NOT EXISTS audits (
 		id TEXT PRIMARY KEY,
 		plan_id TEXT,
 		plan_name TEXT NOT NULL,
@@ -68,7 +68,7 @@ func (db *DB) migrate() error {
 
 	CREATE TABLE IF NOT EXISTS reports (
 		id TEXT PRIMARY KEY,
-		inspection_id TEXT NOT NULL REFERENCES inspections(id) ON DELETE CASCADE,
+		audit_id TEXT NOT NULL REFERENCES audits(id) ON DELETE CASCADE,
 		url TEXT NOT NULL,
 		final_url TEXT NOT NULL,
 		status_code INTEGER NOT NULL,
@@ -78,9 +78,35 @@ func (db *DB) migrate() error {
 		highest_severity TEXT NOT NULL,
 		issues TEXT NOT NULL
 	);
-	CREATE INDEX IF NOT EXISTS idx_reports_insp ON reports(inspection_id);
+	CREATE INDEX IF NOT EXISTS idx_reports_audit ON reports(audit_id);
 	`
+	if err := db.migrateLegacyTables(); err != nil {
+		return err
+	}
 	_, err := db.conn.Exec(schema)
+	return err
+}
+
+func (db *DB) migrateLegacyTables() error {
+	var table string
+	err := db.conn.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='inspections'`).Scan(&table)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	if _, err := db.conn.Exec(`ALTER TABLE inspections RENAME TO audits`); err != nil {
+		return err
+	}
+	if _, err := db.conn.Exec(`ALTER TABLE reports RENAME COLUMN inspection_id TO audit_id`); err != nil {
+		return err
+	}
+	if _, err := db.conn.Exec(`DROP INDEX IF EXISTS idx_reports_insp`); err != nil {
+		return err
+	}
+	_, err = db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_reports_audit ON reports(audit_id)`)
 	return err
 }
 
@@ -197,12 +223,12 @@ func (db *DB) DeleteChecklist(id string) error {
 }
 
 // -------------------------------------------------------------------------
-// Inspection & Report Helpers
+// Audit & Report Helpers
 // -------------------------------------------------------------------------
 
-func (db *DB) SaveInspection(insp *data.Inspection) error {
-	if insp.ID == "" {
-		insp.ID = fmt.Sprintf("insp_%d", time.Now().UnixNano())
+func (db *DB) SaveAudit(a *data.Audit) error {
+	if a.ID == "" {
+		a.ID = fmt.Sprintf("aud_%d", time.Now().UnixNano())
 	}
 
 	tx, err := db.conn.Begin()
@@ -211,30 +237,30 @@ func (db *DB) SaveInspection(insp *data.Inspection) error {
 	}
 	defer tx.Rollback()
 
-	inspQuery := `INSERT INTO inspections (
+	audQuery := `INSERT INTO audits (
 		id, plan_id, plan_name, checklist_id, checklist_name,
 		started_at, duration_ms, total_endpoints, passed_count, failed_count, highest_severity
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	_, err = tx.Exec(inspQuery,
-		insp.ID, insp.PlanID, insp.PlanName, insp.ChecklistID, insp.ChecklistName,
-		insp.StartedAt, insp.Duration.Milliseconds(), insp.TotalEndpoints,
-		insp.PassedCount, insp.FailedCount, string(insp.HighestSeverity),
+	_, err = tx.Exec(audQuery,
+		a.ID, a.PlanID, a.PlanName, a.ChecklistID, a.ChecklistName,
+		a.StartedAt, a.Duration.Milliseconds(), a.TotalEndpoints,
+		a.PassedCount, a.FailedCount, string(a.HighestSeverity),
 	)
 	if err != nil {
 		return err
 	}
 
 	repQuery := `INSERT INTO reports (
-		id, inspection_id, url, final_url, status_code,
+		id, audit_id, url, final_url, status_code,
 		duration_ms, passed_count, failed_count, highest_severity, issues
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	for i, r := range insp.Reports {
-		reportID := fmt.Sprintf("%s_r_%d", insp.ID, i+1)
+	for i, r := range a.Reports {
+		reportID := fmt.Sprintf("%s_r_%d", a.ID, i+1)
 		issuesJSON, _ := json.Marshal(r.Issues)
 		_, err = tx.Exec(repQuery,
-			reportID, insp.ID, r.URL, r.FinalURL, r.StatusCode,
+			reportID, a.ID, r.URL, r.FinalURL, r.StatusCode,
 			r.Duration.Milliseconds(), r.Summary.PassedCount, r.Summary.FailedCount,
 			string(r.Summary.HighestSeverity), string(issuesJSON),
 		)
@@ -246,44 +272,44 @@ func (db *DB) SaveInspection(insp *data.Inspection) error {
 	return tx.Commit()
 }
 
-func (db *DB) ListInspections() ([]*data.Inspection, error) {
+func (db *DB) ListAudits() ([]*data.Audit, error) {
 	query := `SELECT id, plan_id, plan_name, checklist_id, checklist_name,
 	                 started_at, duration_ms, total_endpoints, passed_count, failed_count, highest_severity
-	          FROM inspections ORDER BY started_at DESC`
+	          FROM audits ORDER BY started_at DESC`
 	rows, err := db.conn.Query(query)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var list []*data.Inspection
+	var list []*data.Audit
 	for rows.Next() {
-		var insp data.Inspection
+		var a data.Audit
 		var durationMs int64
 		var sev string
 		var planID, checklistID sql.NullString
 
-		if err := rows.Scan(&insp.ID, &planID, &insp.PlanName, &checklistID, &insp.ChecklistName,
-			&insp.StartedAt, &durationMs, &insp.TotalEndpoints, &insp.PassedCount, &insp.FailedCount, &sev); err != nil {
+		if err := rows.Scan(&a.ID, &planID, &a.PlanName, &checklistID, &a.ChecklistName,
+			&a.StartedAt, &durationMs, &a.TotalEndpoints, &a.PassedCount, &a.FailedCount, &sev); err != nil {
 			return nil, err
 		}
 
-		insp.PlanID = planID.String
-		insp.ChecklistID = checklistID.String
-		insp.Duration = time.Duration(durationMs) * time.Millisecond
-		insp.HighestSeverity = data.Severity(sev)
+		a.PlanID = planID.String
+		a.ChecklistID = checklistID.String
+		a.Duration = time.Duration(durationMs) * time.Millisecond
+		a.HighestSeverity = data.Severity(sev)
 
-		reports, _ := db.loadReports(insp.ID)
-		insp.Reports = reports
+		reports, _ := db.loadReports(a.ID)
+		a.Reports = reports
 
-		list = append(list, &insp)
+		list = append(list, &a)
 	}
 	return list, nil
 }
 
-func (db *DB) loadReports(inspectionID string) ([]*data.Report, error) {
+func (db *DB) loadReports(auditID string) ([]*data.Report, error) {
 	rows, err := db.conn.Query(`SELECT url, final_url, status_code, duration_ms, passed_count, failed_count, highest_severity, issues
-	                            FROM reports WHERE inspection_id = ?`, inspectionID)
+	                            FROM reports WHERE audit_id = ?`, auditID)
 	if err != nil {
 		return nil, err
 	}
@@ -310,7 +336,7 @@ func (db *DB) loadReports(inspectionID string) ([]*data.Report, error) {
 	return reports, nil
 }
 
-func (db *DB) DeleteInspection(id string) error {
-	_, err := db.conn.Exec(`DELETE FROM inspections WHERE id = ?`, id)
+func (db *DB) DeleteAudit(id string) error {
+	_, err := db.conn.Exec(`DELETE FROM audits WHERE id = ?`, id)
 	return err
 }

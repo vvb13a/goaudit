@@ -30,13 +30,13 @@ func NewRunner(fetcher *Fetcher, cfg *config.Config, checks ...data.Check) *Runn
 	}
 }
 
-func (r *Runner) InspectPlan(
+func (r *Runner) AuditPlan(
 	ctx context.Context,
 	planName string,
 	rawURLs []string,
 	checklistName string,
 	onProgress ProgressCallback,
-) (*data.Inspection, error) {
+) (*data.Audit, error) {
 	resolvedURLs, err := r.ResolveURLs(ctx, rawURLs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve targets: %w", err)
@@ -44,7 +44,7 @@ func (r *Runner) InspectPlan(
 
 	total := len(resolvedURLs)
 	if total == 0 {
-		return nil, fmt.Errorf("no URLs found to inspect")
+		return nil, fmt.Errorf("no URLs found to audit")
 	}
 
 	startedAt := time.Now()
@@ -60,7 +60,7 @@ func (r *Runner) InspectPlan(
 
 	// Notify initial state
 	if onProgress != nil {
-		onProgress("Starting inspection...", 0, total)
+		onProgress("Starting audit...", 0, total)
 	}
 
 	// 2. Concurrent worker pool
@@ -89,11 +89,11 @@ func (r *Runner) InspectPlan(
 				onProgress(u, count, total)
 			}
 
-			rep, err := r.Inspect(ctx, u)
+			rep, err := r.Audit(ctx, u)
 			if err != nil {
 				mu.Lock()
 				if firstErr == nil {
-					firstErr = fmt.Errorf("error inspecting %s: %w", u, err)
+					firstErr = fmt.Errorf("error auditing %s: %w", u, err)
 				}
 				mu.Unlock()
 				return
@@ -133,7 +133,7 @@ func (r *Runner) InspectPlan(
 		}
 	}
 
-	return &data.Inspection{
+	return &data.Audit{
 		PlanName:        planName,
 		ChecklistName:   checklistName,
 		StartedAt:       startedAt,
@@ -173,7 +173,7 @@ func (r *Runner) ResolveURLs(ctx context.Context, rawURLs []string) ([]string, e
 	return resolved, nil
 }
 
-func (r *Runner) Inspect(ctx context.Context, targetURL string) (*data.Report, error) {
+func (r *Runner) Audit(ctx context.Context, targetURL string) (*data.Report, error) {
 	doc, err := r.fetcher.Fetch(ctx, targetURL)
 	if err != nil {
 		return nil, err

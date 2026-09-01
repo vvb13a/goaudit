@@ -19,7 +19,7 @@ type Report struct {
 	Issues     []Issue       `json:"issues"`
 }
 
-type Inspection struct {
+type Audit struct {
 	ID              string        `json:"id"`
 	PlanID          string        `json:"plan_id,omitempty"`
 	PlanName        string        `json:"plan_name"`
