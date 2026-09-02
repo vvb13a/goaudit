@@ -2,8 +2,6 @@ package tui
 
 import (
 	"fmt"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 // Tab pairs a top-level view with the label shown in the navigation bar.
@@ -12,9 +10,9 @@ type Tab struct {
 	Label string
 }
 
-// NavModel renders the tab bar at the top of the application and tracks which
-// top-level view is active. Navigation (tab / shift+tab / number keys) is
-// handled by the root model.
+// NavModel renders the navigation pills at the top of the application and
+// tracks which top-level view is active. Navigation (tab / shift+tab /
+// number keys) is handled by the root model.
 type NavModel struct {
 	tabs   []Tab
 	active int
@@ -62,15 +60,16 @@ func (m NavModel) Prev() NavModel {
 	return m
 }
 
-func (m NavModel) View() string {
-	var parts []string
+// Pills renders each tab as a styled pill, in order.
+func (m NavModel) Pills() []string {
+	pills := make([]string, 0, len(m.tabs))
 	for i, t := range m.tabs {
 		label := fmt.Sprintf("%d: %s", i+1, t.Label)
 		if i == m.active {
-			parts = append(parts, activeTabStyle.Render(label))
+			pills = append(pills, pillActiveStyle.Render(label))
 		} else {
-			parts = append(parts, inactiveTabStyle.Render(label))
+			pills = append(pills, pillInactiveStyle.Render(label))
 		}
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+	return pills
 }

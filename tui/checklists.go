@@ -48,7 +48,6 @@ type ChecklistsModel struct {
 	table      table.Model
 	form       checklistForm
 	loaded     bool
-	status     string
 	deleteID   string
 	deleteName string
 	width      int
@@ -94,8 +93,7 @@ func (m ChecklistsModel) Update(msg tea.Msg) (ChecklistsModel, tea.Cmd) {
 	case checklistsLoadedMsg:
 		m.loaded = true
 		if msg.err != nil {
-			m.status = fmt.Sprintf("Failed to load checklists: %v", msg.err)
-			return m, nil
+			return m, NotifyDanger(fmt.Sprintf("Failed to load checklists: %v", msg.err))
 		}
 		m.checklists = msg.checklists
 		m.rebuildTable()
@@ -142,12 +140,13 @@ func (m ChecklistsModel) updateList(msg tea.Msg) (ChecklistsModel, tea.Cmd) {
 			idx := m.table.Cursor()
 			if idx < len(m.checklists) {
 				selected := m.checklists[idx]
+				var notice tea.Cmd
 				if err := m.svc.SetActive(context.Background(), selected.ID); err != nil {
-					m.status = fmt.Sprintf("Set active failed: %v", err)
+					notice = NotifyDanger(fmt.Sprintf("Set active failed: %v", err))
 				} else {
-					m.status = fmt.Sprintf("Active checklist set to '%s'", selected.Name)
+					notice = NotifySuccess(fmt.Sprintf("Active checklist set to '%s'", selected.Name))
 				}
-				return m, m.loadCmd()
+				return m, tea.Batch(m.loadCmd(), notice)
 			}
 		}
 	}
@@ -163,7 +162,6 @@ func (m ChecklistsModel) updateForm(msg tea.Msg) (ChecklistsModel, tea.Cmd) {
 		switch msg.String() {
 		case "esc":
 			m.state = checklistsListState
-			m.status = ""
 			return m, nil
 		case "tab", "shift+tab", "backtab":
 			m.form.inName = !m.form.inName
@@ -173,7 +171,9 @@ func (m ChecklistsModel) updateForm(msg tea.Msg) (ChecklistsModel, tea.Cmd) {
 				m.form.name.Blur()
 			}
 			return m, nil
-		case "enter", "ctrl+s":
+		case "ctrl+s":
+			return m.saveForm()
+		case "enter":
 			if !m.form.inName {
 				return m.saveForm()
 			}
@@ -206,8 +206,7 @@ func (m ChecklistsModel) updateForm(msg tea.Msg) (ChecklistsModel, tea.Cmd) {
 func (m ChecklistsModel) saveForm() (ChecklistsModel, tea.Cmd) {
 	name := strings.TrimSpace(m.form.name.Value())
 	if name == "" {
-		m.status = "Checklist name is required"
-		return m, nil
+		return m, NotifyDanger("Checklist name is required")
 	}
 
 	var chosen []string
@@ -217,8 +216,7 @@ func (m ChecklistsModel) saveForm() (ChecklistsModel, tea.Cmd) {
 		}
 	}
 	if len(chosen) == 0 {
-		m.status = "Select at least one check"
-		return m, nil
+		return m, NotifyDanger("Select at least one check")
 	}
 
 	hasActive := false
@@ -243,17 +241,18 @@ func (m ChecklistsModel) saveForm() (ChecklistsModel, tea.Cmd) {
 		err = m.svc.Update(context.Background(), checklist)
 	}
 	if err != nil {
-		m.status = fmt.Sprintf("Save failed: %v", err)
-		return m, nil
+		return m, NotifyDanger(fmt.Sprintf("Save failed: %v", err))
 	}
 
 	verb := "created"
 	if m.form.id != "" {
 		verb = "updated"
 	}
-	m.status = fmt.Sprintf("Checklist '%s' %s with %d checks!", checklist.Name, verb, len(chosen))
 	m.state = checklistsListState
-	return m, m.loadCmd()
+	return m, tea.Batch(
+		m.loadCmd(),
+		NotifySuccess(fmt.Sprintf("Checklist '%s' %s with %d checks!", checklist.Name, verb, len(chosen))),
+	)
 }
 
 func (m ChecklistsModel) updateDelete(msg tea.Msg) (ChecklistsModel, tea.Cmd) {
@@ -264,13 +263,14 @@ func (m ChecklistsModel) updateDelete(msg tea.Msg) (ChecklistsModel, tea.Cmd) {
 
 	switch key.String() {
 	case "y", "Y":
+		var notice tea.Cmd
 		if err := m.svc.Delete(context.Background(), m.deleteID); err != nil {
-			m.status = fmt.Sprintf("Delete failed: %v", err)
+			notice = NotifyDanger(fmt.Sprintf("Delete failed: %v", err))
 		} else {
-			m.status = fmt.Sprintf("Deleted checklist '%s'", m.deleteName)
+			notice = NotifySuccess(fmt.Sprintf("Deleted checklist '%s'", m.deleteName))
 		}
 		m.state = checklistsListState
-		return m, m.loadCmd()
+		return m, tea.Batch(m.loadCmd(), notice)
 	default:
 		m.deleteID = ""
 		m.deleteName = ""
@@ -325,24 +325,13 @@ func (m ChecklistsModel) View() string {
 }
 
 func (m ChecklistsModel) listView() string {
-	var b strings.Builder
-
 	if !m.loaded {
-		b.WriteString("Loading checklists...")
-	} else if len(m.checklists) == 0 {
-		b.WriteString("No checklists found. Press 'n' to create your first checklist!")
-	} else {
-		b.WriteString(m.table.View())
+		return "Loading checklists..."
 	}
-
-	if m.status != "" {
-		b.WriteString("\n\n")
-		b.WriteString(statusLine(m.status))
+	if len(m.checklists) == 0 {
+		return "No checklists found. Press 'n' to create your first checklist!"
 	}
-
-	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("Space: Set Active  •  Enter: Edit  •  n: New  •  d: Delete  •  q: Quit"))
-	return b.String()
+	return m.table.View()
 }
 
 func (m ChecklistsModel) formView() string {
@@ -379,21 +368,22 @@ func (m ChecklistsModel) formView() string {
 		cat := helpStyle.Render(string(opt.category))
 		b.WriteString(fmt.Sprintf("%s%s %-25s %s\n", cursor, checked, opt.name, cat))
 	}
-
-	if m.status != "" {
-		b.WriteString("\n" + statusLine(m.status) + "\n")
-	}
-
-	b.WriteString("\n" + helpStyle.Render("Tab: Switch Focus  •  Space: Toggle  •  Ctrl+S/Enter: Save  •  Esc: Cancel"))
 	return b.String()
 }
 
 func (m ChecklistsModel) deleteView() string {
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Delete checklist '%s'? This cannot be undone.", m.deleteName))
-	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("y: Delete  •  any other key: Cancel"))
-	return b.String()
+	return fmt.Sprintf("Delete checklist '%s'? This cannot be undone.", m.deleteName)
+}
+
+func (m ChecklistsModel) Help() string {
+	switch m.state {
+	case checklistsFormState:
+		return "Tab: Switch Focus  •  Space: Toggle  •  Ctrl+S/Enter: Save  •  Esc: Cancel"
+	case checklistsDeleteState:
+		return "y: Delete  •  any other key: Cancel"
+	default:
+		return "Space: Set Active  •  Enter: Edit  •  n: New  •  d: Delete  •  q: Quit"
+	}
 }
 
 func (m *ChecklistsModel) rebuildTable() {
@@ -418,15 +408,12 @@ func (m *ChecklistsModel) rebuildTable() {
 		})
 	}
 
-	height := 10
-	if m.height > 0 {
-		height = m.height - 7
+	height := m.height
+	if m.height <= 0 {
+		height = 10
 	}
 	if height < 3 {
 		height = 3
-	}
-	if height > 30 {
-		height = 30
 	}
 
 	t := table.New(

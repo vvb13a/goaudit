@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"strings"
-
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -11,22 +9,22 @@ var (
 	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
 
 	labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	okStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	helpStyle  = lipgloss.NewStyle().Faint(true)
 
-	activeTabStyle = lipgloss.NewStyle().
+	pillActiveStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#FFFFFF")).
 			Background(lipgloss.Color("#5A56E0")).
-			Padding(0, 2).
-			MarginRight(1)
+			Padding(0, 2)
 
-	inactiveTabStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("246")).
-				Background(lipgloss.Color("236")).
-				Padding(0, 2).
-				MarginRight(1)
+	pillInactiveStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#DDDDDD")).
+				Background(lipgloss.Color("#3F3F3F")).
+				Padding(0, 2)
+
+	// chromeSpaceStyle paints background-colored spaces, used to stretch the
+	// header/footer bars edge to edge.
+	chromeSpaceStyle = lipgloss.NewStyle().Background(lipgloss.Color("#262626"))
 )
 
 func tableStyle() table.Styles {
@@ -41,13 +39,4 @@ func tableStyle() table.Styles {
 		Background(lipgloss.Color("57")).
 		Bold(true)
 	return s
-}
-
-func statusLine(status string) string {
-	style := okStyle
-	lower := strings.ToLower(status)
-	if strings.Contains(lower, "fail") || strings.Contains(lower, "required") {
-		style = errStyle
-	}
-	return style.Render(status)
 }

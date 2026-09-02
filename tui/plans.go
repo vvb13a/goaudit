@@ -41,7 +41,6 @@ type PlansModel struct {
 	table      table.Model
 	form       planForm
 	loaded     bool
-	status     string
 	deleteID   string
 	deleteName string
 	width      int
@@ -86,8 +85,7 @@ func (m PlansModel) Update(msg tea.Msg) (PlansModel, tea.Cmd) {
 	case plansLoadedMsg:
 		m.loaded = true
 		if msg.err != nil {
-			m.status = fmt.Sprintf("Failed to load plans: %v", msg.err)
-			return m, nil
+			return m, NotifyDanger(fmt.Sprintf("Failed to load plans: %v", msg.err))
 		}
 		m.plans = msg.plans
 		m.rebuildTable()
@@ -144,7 +142,6 @@ func (m PlansModel) updateForm(msg tea.Msg) (PlansModel, tea.Cmd) {
 		switch msg.String() {
 		case "esc":
 			m.state = plansListState
-			m.status = ""
 			return m, nil
 		case "tab", "shift+tab", "backtab":
 			m.form.nameFocused = !m.form.nameFocused
@@ -173,8 +170,7 @@ func (m PlansModel) updateForm(msg tea.Msg) (PlansModel, tea.Cmd) {
 func (m PlansModel) saveForm() (PlansModel, tea.Cmd) {
 	name := strings.TrimSpace(m.form.name.Value())
 	if name == "" {
-		m.status = "Plan name is required"
-		return m, nil
+		return m, NotifyDanger("Plan name is required")
 	}
 
 	var rawURLs []string
@@ -189,8 +185,7 @@ func (m PlansModel) saveForm() (PlansModel, tea.Cmd) {
 		rawURLs = append(rawURLs, u)
 	}
 	if len(rawURLs) == 0 {
-		m.status = "Add at least one target URL"
-		return m, nil
+		return m, NotifyDanger("Add at least one target URL")
 	}
 
 	plan := &domain.Plan{ID: m.form.id, Name: name, URLs: rawURLs}
@@ -202,17 +197,18 @@ func (m PlansModel) saveForm() (PlansModel, tea.Cmd) {
 		err = m.svc.Update(context.Background(), plan)
 	}
 	if err != nil {
-		m.status = fmt.Sprintf("Save failed: %v", err)
-		return m, nil
+		return m, NotifyDanger(fmt.Sprintf("Save failed: %v", err))
 	}
 
 	verb := "created"
 	if m.form.id != "" {
 		verb = "updated"
 	}
-	m.status = fmt.Sprintf("Plan '%s' %s with %d URLs!", plan.Name, verb, len(plan.URLs))
 	m.state = plansListState
-	return m, m.loadCmd()
+	return m, tea.Batch(
+		m.loadCmd(),
+		NotifySuccess(fmt.Sprintf("Plan '%s' %s with %d URLs!", plan.Name, verb, len(plan.URLs))),
+	)
 }
 
 func (m PlansModel) updateDelete(msg tea.Msg) (PlansModel, tea.Cmd) {
@@ -223,13 +219,14 @@ func (m PlansModel) updateDelete(msg tea.Msg) (PlansModel, tea.Cmd) {
 
 	switch key.String() {
 	case "y", "Y":
+		var notice tea.Cmd
 		if err := m.svc.Delete(context.Background(), m.deleteID); err != nil {
-			m.status = fmt.Sprintf("Delete failed: %v", err)
+			notice = NotifyDanger(fmt.Sprintf("Delete failed: %v", err))
 		} else {
-			m.status = fmt.Sprintf("Deleted plan '%s'", m.deleteName)
+			notice = NotifySuccess(fmt.Sprintf("Deleted plan '%s'", m.deleteName))
 		}
 		m.state = plansListState
-		return m, m.loadCmd()
+		return m, tea.Batch(m.loadCmd(), notice)
 	default:
 		m.deleteID = ""
 		m.deleteName = ""
@@ -278,24 +275,13 @@ func (m PlansModel) View() string {
 }
 
 func (m PlansModel) listView() string {
-	var b strings.Builder
-
 	if !m.loaded {
-		b.WriteString("Loading plans...")
-	} else if len(m.plans) == 0 {
-		b.WriteString("No plans defined yet. Press 'n' to define your first target plan!")
-	} else {
-		b.WriteString(m.table.View())
+		return "Loading plans..."
 	}
-
-	if m.status != "" {
-		b.WriteString("\n\n")
-		b.WriteString(statusLine(m.status))
+	if len(m.plans) == 0 {
+		return "No plans defined yet. Press 'n' to define your first target plan!"
 	}
-
-	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("n: New Plan  •  Enter: Edit  •  d: Delete  •  q: Quit"))
-	return b.String()
+	return m.table.View()
 }
 
 func (m PlansModel) formView() string {
@@ -319,22 +305,22 @@ func (m PlansModel) formView() string {
 		urlsLabel = labelStyle.Render("Target URLs (one per line):")
 	}
 	b.WriteString(urlsLabel + "\n" + m.form.urls.View() + "\n")
-
-	if m.status != "" {
-		b.WriteString("\n" + statusLine(m.status))
-	}
-
-	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("Tab: Switch Focus  •  Ctrl+S: Save  •  Esc: Cancel"))
 	return b.String()
 }
 
 func (m PlansModel) deleteView() string {
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Delete plan '%s'? This cannot be undone.", m.deleteName))
-	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("y: Delete  •  any other key: Cancel"))
-	return b.String()
+	return fmt.Sprintf("Delete plan '%s'? This cannot be undone.", m.deleteName)
+}
+
+func (m PlansModel) Help() string {
+	switch m.state {
+	case plansFormState:
+		return "Tab: Switch Focus  •  Ctrl+S: Save  •  Esc: Cancel"
+	case plansDeleteState:
+		return "y: Delete  •  any other key: Cancel"
+	default:
+		return "n: New Plan  •  Enter: Edit  •  d: Delete  •  q: Quit"
+	}
 }
 
 func (m *PlansModel) rebuildTable() {
@@ -359,15 +345,12 @@ func (m *PlansModel) rebuildTable() {
 		})
 	}
 
-	height := 10
-	if m.height > 0 {
-		height = m.height - 7
+	height := m.height
+	if m.height <= 0 {
+		height = 10
 	}
 	if height < 3 {
 		height = 3
-	}
-	if height > 30 {
-		height = 30
 	}
 
 	t := table.New(
