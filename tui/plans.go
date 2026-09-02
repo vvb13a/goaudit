@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/vvb13a/goaudit/domain"
-	"github.com/vvb13a/goaudit/service"
 
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -25,6 +25,7 @@ const (
 	plansListState plansState = iota
 	plansFormState
 	plansDeleteState
+	plansRunningState
 )
 
 type planForm struct {
@@ -35,23 +36,27 @@ type planForm struct {
 }
 
 type PlansModel struct {
-	svc        *service.PlanService
-	state      plansState
-	plans      []*domain.Plan
-	table      table.Model
-	form       planForm
-	loaded     bool
-	deleteID   string
-	deleteName string
-	width      int
-	height     int
+	deps         Deps
+	state        plansState
+	plans        []*domain.Plan
+	table        table.Model
+	form         planForm
+	progress     ProgressModel
+	progressCh   chan ProgressMsg
+	progressDone chan struct{}
+	loaded       bool
+	deleteID     string
+	deleteName   string
+	width        int
+	height       int
 }
 
-func NewPlansModel(svc *service.PlanService) PlansModel {
+func NewPlansModel(deps Deps) PlansModel {
 	return PlansModel{
-		svc:   svc,
-		state: plansListState,
-		table: table.New(),
+		deps:     deps,
+		state:    plansListState,
+		table:    table.New(),
+		progress: NewProgressModel(),
 	}
 }
 
@@ -69,7 +74,7 @@ func (m PlansModel) NavigationEnabled() bool {
 
 func (m PlansModel) loadCmd() tea.Cmd {
 	return func() tea.Msg {
-		plans, err := m.svc.List(context.Background())
+		plans, err := m.deps.PlanService.List(context.Background())
 		return plansLoadedMsg{plans: plans, err: err}
 	}
 }
@@ -90,6 +95,21 @@ func (m PlansModel) Update(msg tea.Msg) (PlansModel, tea.Cmd) {
 		m.plans = msg.plans
 		m.rebuildTable()
 		return m, nil
+
+	case ProgressMsg:
+		if m.state != plansRunningState {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.progress, cmd = m.progress.Update(msg)
+		return m, tea.Batch(cmd, newProgressWaitCmd(m.progressCh, m.progressDone))
+
+	case progress.FrameMsg:
+		if m.state == plansRunningState {
+			var cmd tea.Cmd
+			m.progress, cmd = m.progress.Update(msg)
+			return m, cmd
+		}
 	}
 
 	switch m.state {
@@ -120,6 +140,12 @@ func (m PlansModel) updateList(msg tea.Msg) (PlansModel, tea.Cmd) {
 				m.state = plansFormState
 			}
 			return m, nil
+		case "r":
+			idx := m.table.Cursor()
+			if idx < len(m.plans) {
+				return m.startRun(m.plans[idx])
+			}
+			return m, nil
 		case "d", "x":
 			idx := m.table.Cursor()
 			if idx < len(m.plans) {
@@ -134,6 +160,32 @@ func (m PlansModel) updateList(msg tea.Msg) (PlansModel, tea.Cmd) {
 	var cmd tea.Cmd
 	m.table, cmd = m.table.Update(msg)
 	return m, cmd
+}
+
+// startRun launches an audit for the given plan against the active checklist.
+func (m PlansModel) startRun(plan *domain.Plan) (PlansModel, tea.Cmd) {
+	checklist, checks, err := prepareRun(m.deps)
+	if err != nil {
+		return m, NotifyDanger(err.Error())
+	}
+
+	m.state = plansRunningState
+	m.progress = m.progress.Start(fmt.Sprintf("Running plan '%s'", plan.Name), m.width)
+	m.progressCh = make(chan ProgressMsg, 16)
+	m.progressDone = make(chan struct{})
+
+	return m, tea.Batch(
+		newRunCmd(m.deps, plan, checklist, checks, PlansView, AuditsView, m.progressCh, m.progressDone),
+		newProgressWaitCmd(m.progressCh, m.progressDone),
+	)
+}
+
+// finishRun restores the model to its list state after a run completes.
+func (m PlansModel) finishRun() PlansModel {
+	m.state = plansListState
+	m.progressCh = nil
+	m.progressDone = nil
+	return m
 }
 
 func (m PlansModel) updateForm(msg tea.Msg) (PlansModel, tea.Cmd) {
@@ -192,9 +244,9 @@ func (m PlansModel) saveForm() (PlansModel, tea.Cmd) {
 
 	var err error
 	if m.form.id == "" {
-		err = m.svc.Create(context.Background(), plan)
+		err = m.deps.PlanService.Create(context.Background(), plan)
 	} else {
-		err = m.svc.Update(context.Background(), plan)
+		err = m.deps.PlanService.Update(context.Background(), plan)
 	}
 	if err != nil {
 		return m, NotifyDanger(fmt.Sprintf("Save failed: %v", err))
@@ -220,7 +272,7 @@ func (m PlansModel) updateDelete(msg tea.Msg) (PlansModel, tea.Cmd) {
 	switch key.String() {
 	case "y", "Y":
 		var notice tea.Cmd
-		if err := m.svc.Delete(context.Background(), m.deleteID); err != nil {
+		if err := m.deps.PlanService.Delete(context.Background(), m.deleteID); err != nil {
 			notice = NotifyDanger(fmt.Sprintf("Delete failed: %v", err))
 		} else {
 			notice = NotifySuccess(fmt.Sprintf("Deleted plan '%s'", m.deleteName))
@@ -262,16 +314,17 @@ func newPlanForm(p *domain.Plan) planForm {
 }
 
 func (m PlansModel) View() string {
-	var b strings.Builder
 	switch m.state {
 	case plansListState:
-		b.WriteString(m.listView())
+		return m.listView()
 	case plansFormState:
-		b.WriteString(m.formView())
+		return overlay(m.listView(), m.formView(), m.width, m.height)
 	case plansDeleteState:
-		b.WriteString(m.deleteView())
+		return overlay(m.listView(), m.deleteView(), m.width, m.height)
+	case plansRunningState:
+		return m.progress.View()
 	}
-	return b.String()
+	return ""
 }
 
 func (m PlansModel) listView() string {
@@ -318,8 +371,10 @@ func (m PlansModel) Help() string {
 		return "Tab: Switch Focus  •  Ctrl+S: Save  •  Esc: Cancel"
 	case plansDeleteState:
 		return "y: Delete  •  any other key: Cancel"
+	case plansRunningState:
+		return "Audit in progress  •  Ctrl+C: Quit"
 	default:
-		return "n: New Plan  •  Enter: Edit  •  d: Delete  •  q: Quit"
+		return "r: Run Plan  •  n: New  •  Enter: Edit  •  d: Delete  •  q: Quit"
 	}
 }
 

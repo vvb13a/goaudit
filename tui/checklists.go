@@ -41,8 +41,7 @@ type checklistForm struct {
 }
 
 type ChecklistsModel struct {
-	svc        *service.ChecklistService
-	registry   *service.CheckRegistry
+	deps       Deps
 	state      checklistsState
 	checklists []*domain.Checklist
 	table      table.Model
@@ -54,12 +53,11 @@ type ChecklistsModel struct {
 	height     int
 }
 
-func NewChecklistsModel(svc *service.ChecklistService, registry *service.CheckRegistry) ChecklistsModel {
+func NewChecklistsModel(deps Deps) ChecklistsModel {
 	return ChecklistsModel{
-		svc:      svc,
-		registry: registry,
-		state:    checklistsListState,
-		table:    table.New(),
+		deps:  deps,
+		state: checklistsListState,
+		table: table.New(),
 	}
 }
 
@@ -77,7 +75,7 @@ func (m ChecklistsModel) NavigationEnabled() bool {
 
 func (m ChecklistsModel) loadCmd() tea.Cmd {
 	return func() tea.Msg {
-		checklists, err := m.svc.List(context.Background())
+		checklists, err := m.deps.ChecklistService.List(context.Background())
 		return checklistsLoadedMsg{checklists: checklists, err: err}
 	}
 }
@@ -118,13 +116,13 @@ func (m ChecklistsModel) updateList(msg tea.Msg) (ChecklistsModel, tea.Cmd) {
 		case "q":
 			return m, tea.Quit
 		case "n":
-			m.form = newChecklistForm(m.registry, nil)
+			m.form = newChecklistForm(m.deps.Registry, nil)
 			m.state = checklistsFormState
 			return m, nil
 		case "e", "l", "right", "enter":
 			idx := m.table.Cursor()
 			if idx < len(m.checklists) {
-				m.form = newChecklistForm(m.registry, m.checklists[idx])
+				m.form = newChecklistForm(m.deps.Registry, m.checklists[idx])
 				m.state = checklistsFormState
 			}
 			return m, nil
@@ -141,7 +139,7 @@ func (m ChecklistsModel) updateList(msg tea.Msg) (ChecklistsModel, tea.Cmd) {
 			if idx < len(m.checklists) {
 				selected := m.checklists[idx]
 				var notice tea.Cmd
-				if err := m.svc.SetActive(context.Background(), selected.ID); err != nil {
+				if err := m.deps.ChecklistService.SetActive(context.Background(), selected.ID); err != nil {
 					notice = NotifyDanger(fmt.Sprintf("Set active failed: %v", err))
 				} else {
 					notice = NotifySuccess(fmt.Sprintf("Active checklist set to '%s'", selected.Name))
@@ -236,9 +234,9 @@ func (m ChecklistsModel) saveForm() (ChecklistsModel, tea.Cmd) {
 
 	var err error
 	if m.form.id == "" {
-		err = m.svc.Create(context.Background(), checklist)
+		err = m.deps.ChecklistService.Create(context.Background(), checklist)
 	} else {
-		err = m.svc.Update(context.Background(), checklist)
+		err = m.deps.ChecklistService.Update(context.Background(), checklist)
 	}
 	if err != nil {
 		return m, NotifyDanger(fmt.Sprintf("Save failed: %v", err))
@@ -264,7 +262,7 @@ func (m ChecklistsModel) updateDelete(msg tea.Msg) (ChecklistsModel, tea.Cmd) {
 	switch key.String() {
 	case "y", "Y":
 		var notice tea.Cmd
-		if err := m.svc.Delete(context.Background(), m.deleteID); err != nil {
+		if err := m.deps.ChecklistService.Delete(context.Background(), m.deleteID); err != nil {
 			notice = NotifyDanger(fmt.Sprintf("Delete failed: %v", err))
 		} else {
 			notice = NotifySuccess(fmt.Sprintf("Deleted checklist '%s'", m.deleteName))
@@ -312,16 +310,15 @@ func newChecklistForm(registry *service.CheckRegistry, cl *domain.Checklist) che
 }
 
 func (m ChecklistsModel) View() string {
-	var b strings.Builder
 	switch m.state {
 	case checklistsListState:
-		b.WriteString(m.listView())
+		return m.listView()
 	case checklistsFormState:
-		b.WriteString(m.formView())
+		return overlay(m.listView(), m.formView(), m.width, m.height)
 	case checklistsDeleteState:
-		b.WriteString(m.deleteView())
+		return overlay(m.listView(), m.deleteView(), m.width, m.height)
 	}
-	return b.String()
+	return m.listView()
 }
 
 func (m ChecklistsModel) listView() string {

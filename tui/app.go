@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -29,6 +31,14 @@ const (
 	AuditsView
 )
 
+// viewSizeMsg replays the content dimensions to a view that just became
+// active. It is consumed by the root only to forward to the nested model,
+// without altering the root's own tracked size.
+type viewSizeMsg struct {
+	width  int
+	height int
+}
+
 // Reserved screen lines for the top header bar and the bottom footer bar.
 const (
 	reservedHeaderLines = 1
@@ -49,6 +59,10 @@ type Model struct {
 	audits        AuditsModel
 	width         int
 	height        int
+
+	plansSized      bool
+	checklistsSized bool
+	auditsSized     bool
 }
 
 func New(deps Deps) Model {
@@ -61,9 +75,9 @@ func New(deps Deps) Model {
 		}),
 		footer:        NewFooterModel(),
 		notifications: NewNotificationModel(),
-		plans:         NewPlansModel(deps.PlanService),
-		checklists:    NewChecklistsModel(deps.ChecklistService, deps.Registry),
-		audits:        NewAuditsModel(deps.AuditService),
+		plans:         NewPlansModel(deps),
+		checklists:    NewChecklistsModel(deps),
+		audits:        NewAuditsModel(deps),
 	}
 }
 
@@ -101,6 +115,54 @@ func (m Model) contentHeight() int {
 	return h
 }
 
+// activateCmd returns the commands to run when a view is activated: its
+// initial data load (once) and, if it has not been sized yet, a replay of the
+// current content dimensions.
+func (m Model) activateCmd() tea.Cmd {
+	var cmds []tea.Cmd
+
+	if c := m.initCmdForActiveView(); c != nil {
+		cmds = append(cmds, c)
+	}
+
+	sized := false
+	switch m.nav.Active() {
+	case PlansView:
+		sized = m.plansSized
+	case ChecklistsView:
+		sized = m.checklistsSized
+	case AuditsView:
+		sized = m.auditsSized
+	}
+
+	if m.width > 0 && !sized {
+		width, height := m.width, m.contentHeight()
+		cmds = append(cmds, func() tea.Msg {
+			return viewSizeMsg{width: width, height: height}
+		})
+	}
+
+	switch len(cmds) {
+	case 0:
+		return nil
+	case 1:
+		return cmds[0]
+	default:
+		return tea.Batch(cmds...)
+	}
+}
+
+func (m Model) markViewSized() {
+	switch m.nav.Active() {
+	case PlansView:
+		m.plansSized = true
+	case ChecklistsView:
+		m.checklistsSized = true
+	case AuditsView:
+		m.auditsSized = true
+	}
+}
+
 // viewIsRoot reports whether the active nested view is at its top-level list
 // state, where tab navigation is allowed.
 func (m Model) viewIsRoot() bool {
@@ -123,19 +185,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab":
 			if m.viewIsRoot() {
 				m.nav = m.nav.Next()
-				return m, m.initCmdForActiveView()
+				return m, m.activateCmd()
 			}
 		case "shift+tab", "backtab":
 			if m.viewIsRoot() {
 				m.nav = m.nav.Prev()
-				return m, m.initCmdForActiveView()
+				return m, m.activateCmd()
 			}
 		}
 
 		if len(msg.Runes) == 1 && msg.Runes[0] >= '1' && msg.Runes[0] <= '9' {
 			if m.viewIsRoot() {
 				m.nav = m.nav.SelectIndex(int(msg.Runes[0]-'0') - 1)
-				return m, m.initCmdForActiveView()
+				return m, m.activateCmd()
 			}
 		}
 	}
@@ -145,10 +207,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.notifications = m.notifications.Push(msg.notification)
 		return m, nil
 
+	case runCompleteMsg:
+		return m.handleRunComplete(msg)
+
+	case viewSizeMsg:
+		inner := tea.WindowSizeMsg{Width: msg.width, Height: msg.height}
+		switch m.nav.Active() {
+		case PlansView:
+			var c tea.Cmd
+			m.plans, c = m.plans.Update(inner)
+			return m, c
+		case ChecklistsView:
+			var c tea.Cmd
+			m.checklists, c = m.checklists.Update(inner)
+			return m, c
+		case AuditsView:
+			var c tea.Cmd
+			m.audits, c = m.audits.Update(inner)
+			return m, c
+		}
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.footer, _ = m.footer.Update(msg)
+		m.markViewSized()
 		// Hand the nested view only the region between the two bars.
 		msg = tea.WindowSizeMsg{Width: msg.Width, Height: m.contentHeight()}
 	}
@@ -168,6 +252,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// handleRunComplete processes the end of an audit run: it resets the
+// initiating view, refreshes the audits history, reports the outcome and
+// navigates to the target tab.
+func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
+	m.plans = m.plans.finishRun()
+	m.audits = m.audits.finishRun()
+
+	var notification Notification
+	switch {
+	case msg.err != nil:
+		notification = Notification{Kind: NotificationDanger, Text: fmt.Sprintf("Audit failed: %v", msg.err)}
+	case msg.audit != nil:
+		notification = Notification{
+			Kind: NotificationSuccess,
+			Text: fmt.Sprintf("Audit '%s' finished: %d endpoints in %v",
+				msg.audit.PlanName, len(msg.audit.Reports), msg.audit.Duration.Round(time.Millisecond).String()),
+		}
+	default:
+		notification = Notification{Kind: NotificationSuccess, Text: fmt.Sprintf("Audit '%s' finished", msg.title)}
+	}
+	m.notifications = m.notifications.Push(notification)
+
+	m.audits = m.audits.markStale()
+	m.nav = m.nav.Select(msg.target)
+	return m, m.activateCmd()
 }
 
 func (m Model) activeViewHelp() string {
