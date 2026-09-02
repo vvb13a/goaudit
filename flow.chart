@@ -1,0 +1,110 @@
+flowchart TD
+    %% Styling classes
+    classDef swappable fill:#e1f5fe,stroke:#0288d1,stroke-width:2px,stroke-dasharray: 5 5;
+    classDef core fill:#fff3e0,stroke:#f57c00,stroke-width:2px;
+    classDef domain fill:#e8f5e9,stroke:#388e3c,stroke-width:3px;
+    classDef engine fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
+
+    %% -------------------------------------------------------------------------
+    %% LAYER 1: DELIVERY CHANNELS (Inbound Adapters)
+    %% -------------------------------------------------------------------------
+    subgraph L1 ["1. DELIVERY CHANNELS (Inbound Adapters) - [SWAPPABLE]"]
+        REST["REST API Handlers<br/>(internal/rest)"]:::swappable
+        TUI["Terminal UI (Bubbletea)<br/>(internal/tui)"]:::swappable
+        CLI["CLI / Batch Scripts<br/>(cmd/...)"]:::swappable
+        VUE["Vue 3 SPA<br/>(Frontend Client)"]
+    end
+
+    VUE -->|HTTP / JSON| REST
+
+    %% -------------------------------------------------------------------------
+    %% LAYER 2: APPLICATION SERVICES
+    %% -------------------------------------------------------------------------
+    subgraph L2 ["2. SERVICE LAYER (Application Orchestration) - [CORE]"]
+        AuditService["AuditService<br/>(Runs audits, saves receipts)"]:::core
+        PlanService["PlanService<br/>(Validates & manages targets)"]:::core
+        ChecklistService["ChecklistService<br/>(Enforces active checklist rules)"]:::core
+        CheckRegistry["CheckRegistry<br/>(In-memory catalog of all rules)"]:::core
+        ConfigMgr["ConfigManager<br/>(Runtime app settings)"]:::core
+    end
+
+    REST --> PlanService
+    REST --> ChecklistService
+    REST --> AuditService
+    REST --> CheckRegistry
+    REST --> ConfigMgr
+
+    TUI --> PlanService
+    TUI --> ChecklistService
+    TUI --> AuditService
+    TUI --> CheckRegistry
+    TUI --> ConfigMgr
+
+    %% -------------------------------------------------------------------------
+    %% LAYER 3: DOMAIN CORE
+    %% -------------------------------------------------------------------------
+    subgraph L3 ["3. DOMAIN LAYER (Pure Business Truth) - [IMMUTABLE CORE]"]
+        direction TB
+        subgraph Entities ["Entities & Value Objects"]
+            Audit["Audit & Summary"]:::domain
+            Report["Report & Issues"]:::domain
+            Plan["Plan"]:::domain
+            Checklist["Checklist"]:::domain
+            Doc["Document & TransferStats"]:::domain
+            Enums["Severity & Category"]:::domain
+        end
+
+        subgraph Contracts ["Interfaces / Ports"]
+            AuditRepoContract["AuditRepository (Interface)"]:::domain
+            PlanRepoContract["PlanRepository (Interface)"]:::domain
+            ChecklistRepoContract["ChecklistRepository (Interface)"]:::domain
+            CheckContract["Check (Interface)"]:::domain
+        end
+    end
+
+    PlanService --> PlanRepoContract
+    PlanService --> Plan
+    ChecklistService --> ChecklistRepoContract
+    ChecklistService --> Checklist
+    AuditService --> AuditRepoContract
+    AuditService --> Audit
+    CheckRegistry --> CheckContract
+
+    %% -------------------------------------------------------------------------
+    %% LAYER 4: EXECUTION ENGINE
+    %% -------------------------------------------------------------------------
+    subgraph L4 ["4. EXECUTION ENGINE SUBSYSTEM - [SWAPPABLE / EXTENSIBLE]"]
+        Runner["Runner<br/>(Worker pool & concurrency)"]:::engine
+        Fetcher["HTTP Fetcher<br/>(httptrace, network timings)"]:::swappable
+        LinkCache["LinkCache<br/>(In-memory TTL cache)"]:::swappable
+        Sitemap["SitemapParser<br/>(XML / Gzip recursion)"]:::engine
+        Checks["Rule Catalog (internal/checks)<br/>- H1Check, SSLCheck, TitleCheck..."]:::swappable
+    end
+
+    AuditService --> Runner
+    Runner --> Fetcher
+    Runner --> Sitemap
+    Runner --> CheckContract
+    Checks -.->|Implements| CheckContract
+    Checks --> LinkCache
+    Sitemap --> Fetcher
+
+    %% -------------------------------------------------------------------------
+    %% LAYER 5: PERSISTENCE (Outbound Adapters)
+    %% -------------------------------------------------------------------------
+    subgraph L5 ["5. PERSISTENCE LAYER (Outbound Adapters) - [SWAPPABLE]"]
+        AuditStore["AuditStore (internal/store)"]:::swappable
+        PlanStore["PlanStore (internal/store)"]:::swappable
+        ChecklistStore["ChecklistStore (internal/store)"]:::swappable
+        SQLC["sqlc Queries + Goose Migrations<br/>(sql/queries, sql/migrations)"]:::swappable
+        DB[("SQLite Database<br/>(data/goaudit.db)")]:::swappable
+    end
+
+    PlanStore -.->|Implements| PlanRepoContract
+    ChecklistStore -.->|Implements| ChecklistRepoContract
+    AuditStore -.->|Implements| AuditRepoContract
+
+    PlanStore --> SQLC
+    ChecklistStore --> SQLC
+    AuditStore --> SQLC
+    SQLC --> DB
