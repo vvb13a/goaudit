@@ -22,15 +22,11 @@ type H1Check struct {
 	MissingEmptySeverity         domain.Severity
 }
 
-func intPtr(i int) *int {
-	return &i
-}
-
 func NewH1Check() *H1Check {
 	return &H1Check{
-		MaxHeadingLength:             intPtr(70),
-		MinHeadingLength:             intPtr(20),
-		LengthWarningOverage:         intPtr(15),
+		MaxHeadingLength:             new(70),
+		MinHeadingLength:             new(20),
+		LengthWarningOverage:         new(15),
 		MinorLengthDeviationSeverity: domain.SeverityNotice,
 		MajorLengthDeviationSeverity: domain.SeverityWarning,
 		MultipleSeverity:             domain.SeverityError,

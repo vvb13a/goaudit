@@ -24,9 +24,9 @@ type MetaDescriptionCheck struct {
 
 func NewMetaDescriptionCheck() *MetaDescriptionCheck {
 	return &MetaDescriptionCheck{
-		MinDescriptionLength:         intPtr(50),
-		MaxDescriptionLength:         intPtr(160),
-		LengthWarningOverage:         intPtr(20),
+		MinDescriptionLength:         new(50),
+		MaxDescriptionLength:         new(160),
+		LengthWarningOverage:         new(20),
 		MinorLengthDeviationSeverity: domain.SeverityNotice,
 		MajorLengthDeviationSeverity: domain.SeverityWarning,
 		MissingEmptySeverity:         domain.SeverityError,
@@ -126,7 +126,7 @@ func (c *MetaDescriptionCheck) checkLength(detectedIssues *[]domain.Issue, descr
 			level = c.MajorLengthDeviationSeverity
 		}
 
-		message := fmt.Sprintf("Title length (%d) exceeds the ideal maximum of %d by %d characters.", descLength, *c.MaxDescriptionLength, overage)
+		message := fmt.Sprintf("Meta description length (%d) exceeds the ideal maximum of %d by %d characters.", descLength, *c.MaxDescriptionLength, overage)
 
 		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 			c,
@@ -143,7 +143,7 @@ func (c *MetaDescriptionCheck) checkLength(detectedIssues *[]domain.Issue, descr
 	}
 
 	if c.MinDescriptionLength != nil && descLength < *c.MinDescriptionLength {
-		message := fmt.Sprintf("Title length (%d) is less than the recommended minimum of %d.", descLength, *c.MinDescriptionLength)
+		message := fmt.Sprintf("Meta description length (%d) is less than the recommended minimum of %d.", descLength, *c.MinDescriptionLength)
 
 		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 			c,

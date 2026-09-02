@@ -24,8 +24,8 @@ type TitleCheck struct {
 
 func NewTitleCheck() *TitleCheck {
 	return &TitleCheck{
-		MinTitleLength:               intPtr(10),
-		MaxTitleLength:               intPtr(60),
+		MinTitleLength:               new(10),
+		MaxTitleLength:               new(60),
 		LengthWarningOverage:         15,
 		MinorLengthDeviationSeverity: domain.SeverityNotice,
 		MajorLengthDeviationSeverity: domain.SeverityWarning,
