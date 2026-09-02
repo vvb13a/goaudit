@@ -1,57 +1,245 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
+	"github.com/vvb13a/goaudit/service"
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
-func BuildPlansTable(plans []*data.Plan) table.Model {
-	columns := []table.Column{
-		{Title: "Plan Name", Width: 26},
-		{Title: "URLs Count", Width: 12},
-		{Title: "Sample URL", Width: 32},
-		{Title: "Created", Width: 18},
-	}
+type plansLoadedMsg struct {
+	plans []*domain.Plan
+	err   error
+}
 
-	var rows []table.Row
-	for _, p := range plans {
-		sampleURL := "-"
-		if len(p.URLs) > 0 {
-			sampleURL = p.URLs[0]
+type plansState int
+
+const (
+	plansListState plansState = iota
+	plansFormState
+	plansDeleteState
+)
+
+type planForm struct {
+	id          string
+	name        textinput.Model
+	urls        textarea.Model
+	nameFocused bool
+}
+
+type PlansModel struct {
+	svc        *service.PlanService
+	state      plansState
+	plans      []*domain.Plan
+	table      table.Model
+	form       planForm
+	loaded     bool
+	status     string
+	deleteID   string
+	deleteName string
+	width      int
+	height     int
+}
+
+var (
+	plansTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
+	plansLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	plansErrStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	plansOKStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	plansHelpStyle  = lipgloss.NewStyle().Faint(true)
+)
+
+func NewPlansModel(svc *service.PlanService) PlansModel {
+	return PlansModel{
+		svc:   svc,
+		state: plansListState,
+		table: table.New(),
+	}
+}
+
+func (m PlansModel) Init() tea.Cmd {
+	return m.loadCmd()
+}
+
+func (m PlansModel) loadCmd() tea.Cmd {
+	return func() tea.Msg {
+		plans, err := m.svc.List(context.Background())
+		return plansLoadedMsg{plans: plans, err: err}
+	}
+}
+
+func (m PlansModel) Update(msg tea.Msg) (PlansModel, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.rebuildTable()
+		return m, nil
+
+	case plansLoadedMsg:
+		m.loaded = true
+		if msg.err != nil {
+			m.status = fmt.Sprintf("Failed to load plans: %v", msg.err)
+			return m, nil
 		}
-
-		rows = append(rows, table.Row{
-			p.Name,
-			fmt.Sprintf("%d URLs", len(p.URLs)),
-			sampleURL,
-			p.CreatedAt.Format("2006-01-02 15:04"),
-		})
+		m.plans = msg.plans
+		m.rebuildTable()
+		return m, nil
 	}
 
-	t := table.New(
-		table.WithColumns(columns),
-		table.WithRows(rows),
-		table.WithFocused(true),
-		table.WithHeight(10),
-	)
-	t.SetStyles(TableStyle())
-	return t
+	switch m.state {
+	case plansListState:
+		return m.updateList(msg)
+	case plansFormState:
+		return m.updateForm(msg)
+	case plansDeleteState:
+		return m.updateDelete(msg)
+	}
+	return m, nil
 }
 
-type CreatePlanForm struct {
-	ID        string // Populated if editing existing plan
-	NameInput textinput.Model
-	URLsArea  textarea.Model
-	InName    bool
+func (m PlansModel) updateList(msg tea.Msg) (PlansModel, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q":
+			return m, tea.Quit
+		case "n", "c":
+			m.form = newPlanForm(nil)
+			m.state = plansFormState
+			return m, nil
+		case "e", "l", "right", "enter":
+			idx := m.table.Cursor()
+			if idx < len(m.plans) {
+				m.form = newPlanForm(m.plans[idx])
+				m.state = plansFormState
+			}
+			return m, nil
+		case "d", "x":
+			idx := m.table.Cursor()
+			if idx < len(m.plans) {
+				m.deleteID = m.plans[idx].ID
+				m.deleteName = m.plans[idx].Name
+				m.state = plansDeleteState
+			}
+			return m, nil
+		}
+	}
+
+	var cmd tea.Cmd
+	m.table, cmd = m.table.Update(msg)
+	return m, cmd
 }
 
-func NewCreatePlanForm() CreatePlanForm {
+func (m PlansModel) updateForm(msg tea.Msg) (PlansModel, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "esc":
+			m.state = plansListState
+			m.status = ""
+			return m, nil
+		case "tab", "shift+tab", "backtab":
+			m.form.nameFocused = !m.form.nameFocused
+			if m.form.nameFocused {
+				m.form.name.Focus()
+				m.form.urls.Blur()
+			} else {
+				m.form.name.Blur()
+				m.form.urls.Focus()
+			}
+			return m, nil
+		case "ctrl+s":
+			return m.saveForm()
+		}
+	}
+
+	var cmd tea.Cmd
+	if m.form.nameFocused {
+		m.form.name, cmd = m.form.name.Update(msg)
+	} else {
+		m.form.urls, cmd = m.form.urls.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m PlansModel) saveForm() (PlansModel, tea.Cmd) {
+	name := strings.TrimSpace(m.form.name.Value())
+	if name == "" {
+		m.status = "Plan name is required"
+		return m, nil
+	}
+
+	var rawURLs []string
+	for _, line := range strings.Split(m.form.urls.Value(), "\n") {
+		u := strings.TrimSpace(line)
+		if u == "" {
+			continue
+		}
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			u = "https://" + u
+		}
+		rawURLs = append(rawURLs, u)
+	}
+	if len(rawURLs) == 0 {
+		m.status = "Add at least one target URL"
+		return m, nil
+	}
+
+	plan := &domain.Plan{ID: m.form.id, Name: name, URLs: rawURLs}
+
+	var err error
+	if m.form.id == "" {
+		err = m.svc.Create(context.Background(), plan)
+	} else {
+		err = m.svc.Update(context.Background(), plan)
+	}
+	if err != nil {
+		m.status = fmt.Sprintf("Save failed: %v", err)
+		return m, nil
+	}
+
+	verb := "created"
+	if m.form.id != "" {
+		verb = "updated"
+	}
+	m.status = fmt.Sprintf("Plan '%s' %s with %d URLs!", plan.Name, verb, len(plan.URLs))
+	m.state = plansListState
+	return m, m.loadCmd()
+}
+
+func (m PlansModel) updateDelete(msg tea.Msg) (PlansModel, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+
+	switch key.String() {
+	case "y", "Y":
+		if err := m.svc.Delete(context.Background(), m.deleteID); err != nil {
+			m.status = fmt.Sprintf("Delete failed: %v", err)
+		} else {
+			m.status = fmt.Sprintf("Deleted plan '%s'", m.deleteName)
+		}
+		m.state = plansListState
+		return m, m.loadCmd()
+	default:
+		m.deleteID = ""
+		m.deleteName = ""
+		m.state = plansListState
+		return m, nil
+	}
+}
+
+func newPlanForm(p *domain.Plan) planForm {
 	ti := textinput.New()
 	ti.Placeholder = "e.g. Marketing & Checkout Pages"
 	ti.CharLimit = 50
@@ -59,62 +247,150 @@ func NewCreatePlanForm() CreatePlanForm {
 	ti.Focus()
 
 	ta := textarea.New()
-	ta.Placeholder = "https://example.com\nhttps://example.com/pricing\nhttps://example.com/checkout"
+	ta.Placeholder = "https://example.com\nhttps://example.com/pricing"
 	ta.CharLimit = 4096
 	ta.SetWidth(50)
 	ta.SetHeight(6)
 
-	return CreatePlanForm{
-		NameInput: ti,
-		URLsArea:  ta,
-		InName:    true,
+	form := planForm{
+		name:        ti,
+		urls:        ta,
+		nameFocused: true,
 	}
-}
-
-func NewEditPlanForm(p *data.Plan) CreatePlanForm {
-	form := NewCreatePlanForm()
-	form.ID = p.ID
-	form.NameInput.SetValue(p.Name)
-	form.URLsArea.SetValue(strings.Join(p.URLs, "\n"))
+	if p != nil {
+		form.id = p.ID
+		form.name.SetValue(p.Name)
+		form.urls.SetValue(strings.Join(p.URLs, "\n"))
+	}
 	return form
 }
 
-func (m Model) renderPlansTab() string {
-	var body strings.Builder
-	if len(m.plans) == 0 {
-		body.WriteString(BaseStyle.Render("No plans defined yet. Press 'n' to define your first target plan!"))
-	} else {
-		body.WriteString(BaseStyle.Render(m.plansTable.View()))
+func (m PlansModel) View() string {
+	var b strings.Builder
+	b.WriteString(plansTitleStyle.Render("Plans"))
+	b.WriteString("\n\n")
+
+	switch m.state {
+	case plansListState:
+		b.WriteString(m.listView())
+	case plansFormState:
+		b.WriteString(m.formView())
+	case plansDeleteState:
+		b.WriteString(m.deleteView())
 	}
-	if m.statusMsg != "" {
-		body.WriteString("\n" + m.statusMsg)
-	}
-	body.WriteString("\n" + HelpStyle.Render("r: Run Plan • →/Enter: Edit Plan • n: New • d: Delete • Tab: Switch Tab • q: Quit"))
-	return body.String()
+	return b.String()
 }
 
-func (m Model) renderPlanFormView() string {
-	var body strings.Builder
+func (m PlansModel) listView() string {
+	var b strings.Builder
 
-	title := "🎯 Define Target Plan"
-	if m.planForm.ID != "" {
-		title = "✏️  Edit Target Plan"
+	if !m.loaded {
+		b.WriteString("Loading plans...")
+	} else if len(m.plans) == 0 {
+		b.WriteString("No plans defined yet. Press 'n' to define your first target plan!")
+	} else {
+		b.WriteString(m.table.View())
 	}
-	body.WriteString(TitleStyle.Render(title))
-	body.WriteString("\n\n")
+
+	if m.status != "" {
+		b.WriteString("\n\n")
+		b.WriteString(m.statusLine())
+	}
+
+	b.WriteString("\n\n")
+	b.WriteString(plansHelpStyle.Render("n: New Plan  •  Enter: Edit  •  d: Delete  •  q: Quit"))
+	return b.String()
+}
+
+func (m PlansModel) formView() string {
+	var b strings.Builder
+
+	title := "Define Target Plan"
+	if m.form.id != "" {
+		title = "Edit Target Plan"
+	}
+	b.WriteString(plansTitleStyle.Render(title))
+	b.WriteString("\n\n")
 
 	nameLabel := "Plan Name:"
-	if m.planForm.InName {
-		nameLabel = SuccessStyle.Render("➤ Plan Name:")
+	if m.form.nameFocused {
+		nameLabel = plansLabelStyle.Render("Plan Name:")
 	}
-	body.WriteString(nameLabel + "\n" + m.planForm.NameInput.View() + "\n\n")
+	b.WriteString(nameLabel + "\n" + m.form.name.View() + "\n\n")
 
 	urlsLabel := "Target URLs (one per line):"
-	if !m.planForm.InName {
-		urlsLabel = SuccessStyle.Render("➤ Target URLs (one per line):")
+	if !m.form.nameFocused {
+		urlsLabel = plansLabelStyle.Render("Target URLs (one per line):")
 	}
-	body.WriteString(urlsLabel + "\n" + m.planForm.URLsArea.View() + "\n\n")
+	b.WriteString(urlsLabel + "\n" + m.form.urls.View() + "\n")
 
-	body.WriteString(HelpStyle.Render("Tab: Switch Focus • Ctrl+S: Save Plan • Esc: Cancel without saving"))
-	return body.String()
+	if m.status != "" {
+		b.WriteString("\n" + m.statusLine())
+	}
+
+	b.WriteString("\n\n")
+	b.WriteString(plansHelpStyle.Render("Tab: Switch Focus  •  Ctrl+S: Save  •  Esc: Cancel"))
+	return b.String()
+}
+
+func (m PlansModel) deleteView() string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Delete plan '%s'? This cannot be undone.", m.deleteName))
+	b.WriteString("\n\n")
+	b.WriteString(plansHelpStyle.Render("y: Delete  •  any other key: Cancel"))
+	return b.String()
+}
+
+func (m PlansModel) statusLine() string {
+	style := plansOKStyle
+	lower := strings.ToLower(m.status)
+	if strings.Contains(lower, "fail") || strings.Contains(lower, "required") {
+		style = plansErrStyle
+	}
+	return style.Render(m.status)
+}
+
+func (m *PlansModel) rebuildTable() {
+	columns := []table.Column{
+		{Title: "Plan Name", Width: 26},
+		{Title: "URLs", Width: 8},
+		{Title: "Sample URL", Width: 34},
+		{Title: "Created", Width: 18},
+	}
+
+	rows := make([]table.Row, 0, len(m.plans))
+	for _, p := range m.plans {
+		sampleURL := "-"
+		if len(p.URLs) > 0 {
+			sampleURL = p.URLs[0]
+		}
+		rows = append(rows, table.Row{
+			p.Name,
+			fmt.Sprintf("%d", len(p.URLs)),
+			sampleURL,
+			p.CreatedAt.Format("2006-01-02 15:04"),
+		})
+	}
+
+	height := 10
+	if m.height > 0 {
+		height = m.height - 7
+	}
+	if height < 3 {
+		height = 3
+	}
+	if height > 30 {
+		height = 30
+	}
+
+	t := table.New(
+		table.WithColumns(columns),
+		table.WithRows(rows),
+		table.WithFocused(true),
+		table.WithHeight(height),
+	)
+	if m.width > 0 {
+		t.SetWidth(m.width - 2)
+	}
+	m.table = t
 }

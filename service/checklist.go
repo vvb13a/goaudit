@@ -151,13 +151,13 @@ func (s *ChecklistService) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-func (s *ChecklistService) SeedDefault(ctx context.Context, r *CheckRegistry) {
+func (s *ChecklistService) SeedDefault(ctx context.Context) {
 	checklists, err := s.List(ctx)
 	if err != nil || len(checklists) > 0 {
 		return
 	}
 
-	allChecks := r.All()
+	allChecks := s.registry.All()
 	names := make([]string, 0, len(allChecks))
 	for _, c := range allChecks {
 		names = append(names, c.Info().Name)

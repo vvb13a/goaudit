@@ -15,8 +15,6 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
-
 	// 1. Config Manager
 	cfgManager := service.NewManager("./data/config.json")
 	cfg := cfgManager.Get()
@@ -54,16 +52,17 @@ func main() {
 	auditService := service.NewAuditService(db)
 
 	// 5. Seed Default Active Checklist if first run
-	checklistService.SeedDefault(ctx, registry)
+	checklistService.SeedDefault(context.Background())
 
 	// 6. Launch TUI
-	app := tui.New(
-		planService,
-		checklistService,
-		auditService,
-		cfgManager,
-		registry,
-	)
+	app := tui.New(tui.Deps{
+		ConfigManager:    cfgManager,
+		Registry:         registry,
+		Runner:           runner,
+		PlanService:      planService,
+		ChecklistService: checklistService,
+		AuditService:     auditService,
+	})
 
 	program := tea.NewProgram(app, tea.WithAltScreen())
 	if _, err := program.Run(); err != nil {
