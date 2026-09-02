@@ -69,9 +69,9 @@ func New(deps Deps) Model {
 	return Model{
 		deps: deps,
 		nav: NewNavModel([]Tab{
-			{ID: PlansView, Label: "Plans"},
-			{ID: ChecklistsView, Label: "Checklists"},
 			{ID: AuditsView, Label: "Audits"},
+			{ID: ChecklistsView, Label: "Checklists"},
+			{ID: PlansView, Label: "Plans"},
 		}),
 		footer:        NewFooterModel(),
 		notifications: NewNotificationModel(),
@@ -202,39 +202,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	switch msg := msg.(type) {
-	case notifyMsg:
-		m.notifications = m.notifications.Push(msg.notification)
+	// Global notifications.
+	if nm, ok := msg.(notifyMsg); ok {
+		m.notifications = m.notifications.Push(nm.notification)
 		return m, nil
+	}
 
-	case runCompleteMsg:
-		return m.handleRunComplete(msg)
+	// Completed audit runs.
+	if rc, ok := msg.(runCompleteMsg); ok {
+		return m.handleRunComplete(rc)
+	}
 
-	case viewSizeMsg:
-		inner := tea.WindowSizeMsg{Width: msg.width, Height: msg.height}
-		switch m.nav.Active() {
-		case PlansView:
-			var c tea.Cmd
-			m.plans, c = m.plans.Update(inner)
-			return m, c
-		case ChecklistsView:
-			var c tea.Cmd
-			m.checklists, c = m.checklists.Update(inner)
-			return m, c
-		case AuditsView:
-			var c tea.Cmd
-			m.audits, c = m.audits.Update(inner)
-			return m, c
-		}
-		return m, nil
-
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.footer, _ = m.footer.Update(msg)
+	// Sizing messages are forwarded to the active nested view as the content
+	// region only; the root keeps the full terminal dimensions for itself.
+	if wm, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = wm.Width
+		m.height = wm.Height
+		m.footer, _ = m.footer.Update(wm)
 		m.markViewSized()
-		// Hand the nested view only the region between the two bars.
-		msg = tea.WindowSizeMsg{Width: msg.Width, Height: m.contentHeight()}
+		msg = tea.WindowSizeMsg{Width: wm.Width, Height: m.contentHeight()}
+	}
+	if vs, ok := msg.(viewSizeMsg); ok {
+		msg = tea.WindowSizeMsg{Width: vs.width, Height: vs.height}
 	}
 
 	switch m.nav.Active() {
@@ -254,9 +243,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleRunComplete processes the end of an audit run: it resets the
-// initiating view, refreshes the audits history, reports the outcome and
-// navigates to the target tab.
 func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
 	m.plans = m.plans.finishRun()
 	m.audits = m.audits.finishRun()

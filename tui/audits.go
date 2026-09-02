@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -69,6 +70,12 @@ type AuditsModel struct {
 	reportIdx     int
 	reportsTable  table.Model
 	issuesTable   table.Model
+
+	// Sorted issues of the currently selected report plus issue detail modal.
+	reportIssues    []domain.Issue
+	issueDetailOpen bool
+	issueDetail     domain.Issue
+	issueDetailURL  string
 }
 
 func NewAuditsModel(deps Deps) AuditsModel {
@@ -183,6 +190,13 @@ func (m AuditsModel) Update(msg tea.Msg) (AuditsModel, tea.Cmd) {
 // ---- List / split handling ----
 
 func (m AuditsModel) updateList(msg tea.Msg) (AuditsModel, tea.Cmd) {
+	if m.issueDetailOpen {
+		if key, ok := msg.(tea.KeyMsg); ok && key.String() == "esc" {
+			m.issueDetailOpen = false
+		}
+		return m, nil
+	}
+
 	if m.split {
 		return m.updateSplit(msg)
 	}
@@ -278,6 +292,18 @@ func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
 		}
 
 	case paneIssues:
+		if key, ok := msg.(tea.KeyMsg); ok && key.String() == "enter" {
+			idx := m.issuesTable.Cursor()
+			if idx >= 0 && idx < len(m.reportIssues) {
+				rep := m.currentReport()
+				m.issueDetail = m.reportIssues[idx]
+				if rep != nil {
+					m.issueDetailURL = rep.URL
+				}
+				m.issueDetailOpen = true
+			}
+			return m, nil
+		}
 		m.issuesTable, cmd = m.issuesTable.Update(msg)
 	}
 	return m, cmd
@@ -439,7 +465,11 @@ func (m AuditsModel) contentView() string {
 func (m AuditsModel) View() string {
 	switch m.state {
 	case auditsListState:
-		return m.contentView()
+		content := m.contentView()
+		if m.issueDetailOpen {
+			return overlay(content, m.issueDetailView(), m.width, m.height)
+		}
+		return content
 	case auditsDeleteState:
 		return overlay(m.contentView(), m.deleteView(), m.width, m.height)
 	case auditsRunningState:
@@ -461,29 +491,168 @@ func (m AuditsModel) listView() string {
 }
 
 // splitView renders three equal panes: audits, reports of the selected audit
-// and the issues of the selected report.
+// and the issues of the selected report, with a severity summary line on top.
 func (m AuditsModel) splitView() string {
 	paneW := m.width / 3
-	if paneW < 16 {
+	if paneW < 20 || m.height < 5 {
 		return m.listView()
 	}
 
-	left := padLines(strings.Split(m.table.View(), "\n"), m.height, paneW)
-	middle := padLines(strings.Split(m.middlePaneView(), "\n"), m.height, paneW)
-	right := padLines(strings.Split(m.rightPaneView(), "\n"), m.height, paneW)
+	boxH := m.height - 1
+	innerW := paneW - 2
 
-	divider := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("│")
+	left := m.paneView(m.table.View(), innerW, boxH-2)
+	middle := m.paneView(m.middlePaneView(), innerW, boxH-2)
+	right := m.paneView(m.rightPaneView(), innerW, boxH-2)
+
+	leftBox := paneBox(left, paneW, boxH, m.focusPane == paneAudits)
+	middleBox := paneBox(middle, paneW, boxH, m.focusPane == paneReports)
+	rightBox := paneBox(right, paneW, boxH, m.focusPane == paneIssues)
+
+	leftLines := strings.Split(leftBox, "\n")
+	middleLines := strings.Split(middleBox, "\n")
+	rightLines := strings.Split(rightBox, "\n")
 
 	var b strings.Builder
-	for i := 0; i < m.height; i++ {
-		b.WriteString(left[i])
-		b.WriteString(divider)
-		b.WriteString(middle[i])
-		b.WriteString(divider)
-		b.WriteString(right[i])
+	b.WriteString(m.severityWidget())
+	b.WriteString("\n")
+	for i := 0; i < boxH; i++ {
+		b.WriteString(leftLines[i])
+		b.WriteString(middleLines[i])
+		b.WriteString(rightLines[i])
 		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// paneView fills pane content (already sized by the tables) out to exactly
+// height lines of width w.
+func (m AuditsModel) paneView(content string, w, height int) string {
+	lines := strings.Split(content, "\n")
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	for i := 0; i < height; i++ {
+		lines[i] = clipToWidth(lines[i], w)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// paneBox frames pane content with a rounded border; the focused pane glows
+// with an accent-colored border while the others stay dim.
+func paneBox(content string, width, height int, focused bool) string {
+	innerW := width - 2
+	if innerW < 4 {
+		innerW = 4
+	}
+
+	color := lipgloss.Color("#444b6a")
+	style := lipgloss.NewStyle().Foreground(color)
+	if focused {
+		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7aa2f7"))
+	}
+
+	innerRows := height - 2
+	if innerRows < 1 {
+		innerRows = 1
+	}
+	lines := strings.Split(content, "\n")
+	for len(lines) < innerRows {
+		lines = append(lines, "")
+	}
+
+	side := style.Render("│")
+	var b strings.Builder
+	b.WriteString(style.Render("╭" + strings.Repeat("─", innerW) + "╮"))
+	b.WriteString("\n")
+	for i := 0; i < innerRows; i++ {
+		b.WriteString(side)
+		b.WriteString(clipToWidth(lines[i], innerW))
+		b.WriteString(side)
+		b.WriteString("\n")
+	}
+	b.WriteString(style.Render("╰" + strings.Repeat("─", innerW) + "┘"))
+	return b.String()
+}
+
+// clipToWidth truncates or pads a string to the given display width.
+func clipToWidth(s string, w int) string {
+	pad := w - lipgloss.Width(s)
+	if pad >= 0 {
+		return s + strings.Repeat(" ", pad)
+	}
+	runes := []rune(s)
+	if w <= 1 {
+		return "…"
+	}
+	return string(runes[:w-1]) + "…"
+}
+
+// regionHeight is the number of table rows that fit in one pane below the
+// severity widget while in split mode (box borders take two rows).
+func (m AuditsModel) regionHeight() int {
+	h := m.height
+	if h <= 0 {
+		return 10
+	}
+	if m.split {
+		h -= 3
+	}
+	if h < 1 {
+		return 1
+	}
+	return h
+}
+
+// severityWidget renders FATAL/ERROR/WARN/NOTICE/INFO/PASS counts for the
+// issues of the currently selected report.
+func (m AuditsModel) severityWidget() string {
+	counts := make(map[domain.Severity]int)
+	for _, iss := range m.reportIssues {
+		counts[iss.Severity]++
+	}
+
+	type badge struct {
+		severity domain.Severity
+		label    string
+	}
+	labels := []badge{
+		{domain.SeverityFatal, "FATAL"},
+		{domain.SeverityError, "ERROR"},
+		{domain.SeverityWarning, "WARN"},
+		{domain.SeverityNotice, "NOTICE"},
+		{domain.SeverityInfo, "INFO"},
+		{domain.SeveritySuccess, "PASS"},
+	}
+
+	var parts []string
+	for _, b := range labels {
+		style := lipgloss.NewStyle().Bold(true).Foreground(issueSeverityColor(b.severity))
+		parts = append(parts, style.Render(fmt.Sprintf("%s: %d", b.label, counts[b.severity])))
+	}
+	var line strings.Builder
+	for i, part := range parts {
+		if i > 0 {
+			line.WriteString("  ")
+		}
+		line.WriteString(part)
+	}
+	return line.String()
+}
+
+func issueSeverityColor(severity domain.Severity) lipgloss.Color {
+	switch severity {
+	case domain.SeverityFatal, domain.SeverityError:
+		return lipgloss.Color("9")
+	case domain.SeverityWarning:
+		return lipgloss.Color("3")
+	case domain.SeverityNotice:
+		return lipgloss.Color("39")
+	case domain.SeverityInfo:
+		return lipgloss.Color("45")
+	default:
+		return lipgloss.Color("10")
+	}
 }
 
 func (m AuditsModel) middlePaneView() string {
@@ -508,16 +677,56 @@ func (m AuditsModel) rightPaneView() string {
 	return m.issuesTable.View()
 }
 
-func padLines(lines []string, height, width int) []string {
-	for len(lines) < height {
-		lines = append(lines, "")
+// issueDetailView renders the full details of the selected issue, including
+// the evidence map as formatted JSON.
+func (m AuditsModel) issueDetailView() string {
+	issue := m.issueDetail
+	var b strings.Builder
+
+	status := "PASSED"
+	if !issue.Passed {
+		status = "FAILED"
 	}
-	for i, l := range lines {
-		if w := lipgloss.Width(l); w < width {
-			lines[i] = l + strings.Repeat(" ", width-w)
+	b.WriteString(titleStyle.Render(fmt.Sprintf("%s — %s", issue.CheckName, string(issue.Severity))))
+	b.WriteString("\n\n")
+	b.WriteString(fmt.Sprintf("Severity:  %s (%s)\n", status, issue.Severity))
+	if issue.Category != "" {
+		b.WriteString(fmt.Sprintf("Category:  %s\n", issue.Category.DisplayName()))
+	}
+	b.WriteString(fmt.Sprintf("Page:      %s\n", m.issueDetailURL))
+	b.WriteString("\nMessage:\n")
+	b.WriteString(wrapText(issue.Message, m.width-16))
+	if len(issue.Details) > 0 {
+		b.WriteString("\n\nDetails & Evidence:\n")
+		var buf strings.Builder
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(issue.Details); err == nil {
+			b.WriteString(wrapText(strings.TrimRight(buf.String(), "\n"), m.width-16))
 		}
 	}
-	return lines
+	return b.String()
+}
+
+// wrapText soft-wraps long lines at the given width, keeping existing
+// newlines.
+func wrapText(s string, width int) string {
+	if width < 20 {
+		width = 20
+	}
+	var out strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		runes := []rune(line)
+		for len(runes) > width {
+			out.WriteString(string(runes[:width]))
+			out.WriteString("\n")
+			runes = runes[width:]
+		}
+		out.WriteString(string(runes))
+		out.WriteString("\n")
+	}
+	return strings.TrimRight(out.String(), "\n")
 }
 
 func (m AuditsModel) deleteView() string {
@@ -541,6 +750,9 @@ func (m AuditsModel) Help() string {
 	case auditsPromptState:
 		return "Enter: Run  •  Esc: Cancel"
 	case auditsListState:
+		if m.issueDetailOpen {
+			return "Esc: Close Details  •  q: Quit"
+		}
 		if !m.split {
 			return "Enter: Open Audit  •  n: Audit URL  •  r: Rerun  •  d: Delete  •  q: Quit"
 		}
@@ -618,13 +830,7 @@ func (m *AuditsModel) rebuildAuditsTable() {
 		}
 	}
 
-	height := m.height
-	if m.height <= 0 {
-		height = 10
-	}
-	if height < 3 {
-		height = 3
-	}
+	height := m.regionHeight()
 
 	t := table.New(
 		table.WithColumns(columns),
@@ -644,7 +850,7 @@ func (m *AuditsModel) rebuildAuditsTable() {
 }
 
 func (m *AuditsModel) rebuildReportsTable() {
-	paneW := m.width / 3
+	paneW := m.width/3 - 2
 	if m.detailAudit == nil {
 		m.reportsTable = table.New()
 		return
@@ -668,13 +874,7 @@ func (m *AuditsModel) rebuildReportsTable() {
 		})
 	}
 
-	height := m.height
-	if m.height <= 0 {
-		height = 10
-	}
-	if height < 3 {
-		height = 3
-	}
+	height := m.regionHeight()
 
 	t := table.New(
 		table.WithColumns(columns),
@@ -683,13 +883,16 @@ func (m *AuditsModel) rebuildReportsTable() {
 		table.WithHeight(height),
 	)
 	t.SetStyles(tableStyle())
+	if paneW < 8 {
+		paneW = 8
+	}
 	t.SetWidth(paneW)
 	t.SetCursor(m.reportIdx)
 	m.reportsTable = t
 }
 
 func (m *AuditsModel) rebuildIssuesTable() {
-	paneW := m.width / 3
+	paneW := m.width/3 - 2
 	rep := m.currentReport()
 	if rep == nil {
 		m.issuesTable = table.New()
@@ -723,25 +926,23 @@ func (m *AuditsModel) rebuildIssuesTable() {
 		}
 	}
 
-	rows := make([]table.Row, 0, len(rep.Issues))
-	for _, iss := range rep.Issues {
+	sorted := make([]domain.Issue, len(rep.Issues))
+	copy(sorted, rep.Issues)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return sorted[i].Severity.Weight() > sorted[j].Severity.Weight()
+	})
+	m.reportIssues = sorted
+
+	rows := make([]table.Row, 0, len(sorted))
+	for _, iss := range sorted {
 		row := []string{string(iss.Severity), clipCell(iss.Message, msgW-1)}
 		if checkW > 0 {
 			row = []string{string(iss.Severity), clipCell(iss.CheckName, checkW-1), clipCell(iss.Message, msgW-1)}
 		}
 		rows = append(rows, row)
 	}
-	sort.SliceStable(rows, func(i, j int) bool {
-		return domain.Severity(rows[i][0]).Weight() > domain.Severity(rows[j][0]).Weight()
-	})
 
-	height := m.height
-	if m.height <= 0 {
-		height = 10
-	}
-	if height < 3 {
-		height = 3
-	}
+	height := m.regionHeight()
 
 	t := table.New(
 		table.WithColumns(columns),
