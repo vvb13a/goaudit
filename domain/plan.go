@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"context"
 	"errors"
 	"net/url"
 	"slices"
@@ -61,11 +60,4 @@ func (p *Plan) Validate() error {
 		}
 	}
 	return nil
-}
-
-type PlanRepository interface {
-	Save(ctx context.Context, plan *Plan) error
-	GetByID(ctx context.Context, id string) (*Plan, error)
-	List(ctx context.Context) ([]*Plan, error)
-	Delete(ctx context.Context, id string) error
 }

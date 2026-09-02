@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"context"
 	"errors"
 	"time"
 )
@@ -86,11 +85,4 @@ type AuditFilter struct {
 	HighestSeverity *Severity
 	Limit           int
 	Offset          int
-}
-
-type AuditRepository interface {
-	Save(ctx context.Context, audit *Audit) error
-	GetByID(ctx context.Context, id string) (*Audit, error)
-	List(ctx context.Context, filter AuditFilter) ([]*Audit, error)
-	Delete(ctx context.Context, id string) error
 }

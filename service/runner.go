@@ -44,7 +44,6 @@ func NewRunner(fetcher *Fetcher, cfg RunnerConfig) *Runner {
 	}
 }
 
-// ExecutePlan runs checks across all targets defined in a Plan using the provided checks.
 func (r *Runner) ExecutePlan(
 	ctx context.Context,
 	plan *domain.Plan,
@@ -82,7 +81,6 @@ func (r *Runner) ExecutePlan(
 		semaphore = make(chan struct{}, r.cfg.Concurrency)
 	)
 
-	// Process URLs concurrently through the worker pool
 	for i, targetURL := range resolvedURLs {
 		if ctx.Err() != nil {
 			break
@@ -103,7 +101,6 @@ func (r *Runner) ExecutePlan(
 				time.Sleep(r.cfg.RequestDelay)
 			}
 
-			// Run audit against single target URL
 			report := r.AuditURL(ctx, u, checks)
 			audit.Reports[idx] = report
 
@@ -117,10 +114,9 @@ func (r *Runner) ExecutePlan(
 	wg.Wait()
 
 	if err := ctx.Err(); err != nil {
-		return nil, err // Audit was cancelled
+		return nil, err
 	}
 
-	// Filter out any nil reports if context was cancelled early
 	cleanReports := make([]*domain.Report, 0, len(audit.Reports))
 	for _, rep := range audit.Reports {
 		if rep != nil {
@@ -130,12 +126,11 @@ func (r *Runner) ExecutePlan(
 	audit.Reports = cleanReports
 
 	audit.Duration = time.Since(audit.StartedAt)
-	audit.CalculateSummary() // Cascades metrics down and calculates totals
+	audit.CalculateSummary()
 
 	return audit, nil
 }
 
-// AuditURL fetches a single document and applies all supported checks sequentially.
 func (r *Runner) AuditURL(ctx context.Context, targetURL string, checks []domain.Check) *domain.Report {
 	report := &domain.Report{
 		URL: targetURL,
@@ -143,7 +138,6 @@ func (r *Runner) AuditURL(ctx context.Context, targetURL string, checks []domain
 
 	doc, err := r.fetcher.Fetch(ctx, targetURL)
 	if err != nil {
-		// Network/HTTP error is recorded as a fatal issue on this report
 		report.Issues = []domain.Issue{
 			domain.NewRawIssue(
 				"http_fetch_success",
@@ -161,7 +155,6 @@ func (r *Runner) AuditURL(ctx context.Context, targetURL string, checks []domain
 	report.StatusCode = doc.StatusCode
 	report.Duration = doc.Duration
 
-	// Execute checks sequentially for this document in-memory
 	for _, check := range checks {
 		if !check.Supports(doc) {
 			continue
@@ -175,7 +168,6 @@ func (r *Runner) AuditURL(ctx context.Context, targetURL string, checks []domain
 	return report
 }
 
-// ResolveURLs expands sitemaps (.xml / .xml.gz) into flat lists of unique URLs.
 func (r *Runner) ResolveURLs(ctx context.Context, rawURLs []string) ([]string, error) {
 	var resolved []string
 	seen := make(map[string]struct{})

@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -50,13 +49,4 @@ func (c *Checklist) Validate() error {
 		return ErrChecklistEmptyChecks
 	}
 	return nil
-}
-
-type ChecklistRepository interface {
-	Save(ctx context.Context, checklist *Checklist) error
-	GetByID(ctx context.Context, id string) (*Checklist, error)
-	GetActive(ctx context.Context) (*Checklist, error)
-	SetActive(ctx context.Context, id string) error
-	List(ctx context.Context) ([]*Checklist, error)
-	Delete(ctx context.Context, id string) error
 }

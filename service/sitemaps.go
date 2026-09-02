@@ -13,7 +13,6 @@ import (
 	"github.com/vvb13a/goaudit/domain"
 )
 
-// DocumentFetcher defines the minimal fetcher contract needed to retrieve sitemaps.
 type DocumentFetcher interface {
 	Fetch(ctx context.Context, targetURL string) (*domain.Document, error)
 }
@@ -32,7 +31,6 @@ type sitemapIndexXML struct {
 	} `xml:"sitemap"`
 }
 
-// IsSitemapURL checks if a target URL points to a sitemap XML or GZ file.
 func IsSitemapURL(targetURL string) bool {
 	parsed, err := url.Parse(targetURL)
 	var path string
@@ -47,7 +45,6 @@ func IsSitemapURL(targetURL string) bool {
 		strings.HasSuffix(path, "/sitemap")
 }
 
-// SitemapParser handles recursive discovery and parsing of XML and GZ sitemaps.
 type SitemapParser struct {
 	fetcher  DocumentFetcher
 	maxDepth int
@@ -55,7 +52,7 @@ type SitemapParser struct {
 
 func NewSitemapParser(fetcher DocumentFetcher, maxDepth int) *SitemapParser {
 	if maxDepth <= 0 {
-		maxDepth = 3 // Standard default depth for nested indices
+		maxDepth = 3
 	}
 	return &SitemapParser{
 		fetcher:  fetcher,
@@ -63,7 +60,6 @@ func NewSitemapParser(fetcher DocumentFetcher, maxDepth int) *SitemapParser {
 	}
 }
 
-// Parse extracts all unique target URLs from a sitemap or nested sitemap index.
 func (p *SitemapParser) Parse(ctx context.Context, sitemapURL string) ([]string, error) {
 	visited := make(map[string]bool)
 	uniqueURLs := make(map[string]struct{})
@@ -89,11 +85,11 @@ func (p *SitemapParser) parseRecursive(
 	uniqueURLs map[string]struct{},
 ) error {
 	if depth <= 0 {
-		return nil // Max depth reached, stop recursion gracefully
+		return nil
 	}
 
 	if visited[currentURL] {
-		return nil // Avoid infinite cycles
+		return nil
 	}
 	visited[currentURL] = true
 
@@ -111,7 +107,6 @@ func (p *SitemapParser) parseRecursive(
 		return fmt.Errorf("decompress sitemap %s: %w", currentURL, err)
 	}
 
-	// 1. Try parsing as a Sitemap Index (<sitemapindex>)
 	var indexDoc sitemapIndexXML
 	if err := xml.Unmarshal(bodyBytes, &indexDoc); err == nil && len(indexDoc.Sitemaps) > 0 {
 		for _, sm := range indexDoc.Sitemaps {
@@ -121,14 +116,12 @@ func (p *SitemapParser) parseRecursive(
 			}
 
 			if err := p.parseRecursive(ctx, childURL, depth-1, visited, uniqueURLs); err != nil {
-				// Log or continue past broken child sitemaps without failing the entire run
 				continue
 			}
 		}
 		return nil
 	}
 
-	// 2. Try parsing as a Standard URL Set (<urlset>)
 	var urlSetDoc urlSetXML
 	if err := xml.Unmarshal(bodyBytes, &urlSetDoc); err == nil && len(urlSetDoc.URLs) > 0 {
 		for _, u := range urlSetDoc.URLs {
@@ -143,9 +136,7 @@ func (p *SitemapParser) parseRecursive(
 	return fmt.Errorf("unable to parse %s as a valid XML sitemap", currentURL)
 }
 
-// decompressIfNeeded handles .xml.gz payloads transparently.
 func decompressIfNeeded(sitemapURL string, body []byte) ([]byte, error) {
-	// Check if URL ends with .gz or starts with gzip magic bytes (0x1f, 0x8b)
 	if strings.HasSuffix(strings.ToLower(sitemapURL), ".gz") || (len(body) > 2 && body[0] == 0x1f && body[1] == 0x8b) {
 		reader, err := gzip.NewReader(bytes.NewReader(body))
 		if err != nil {
