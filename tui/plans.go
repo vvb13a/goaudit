@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 type plansLoadedMsg struct {
@@ -49,14 +48,6 @@ type PlansModel struct {
 	height     int
 }
 
-var (
-	plansTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
-	plansLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	plansErrStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	plansOKStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	plansHelpStyle  = lipgloss.NewStyle().Faint(true)
-)
-
 func NewPlansModel(svc *service.PlanService) PlansModel {
 	return PlansModel{
 		svc:   svc,
@@ -67,6 +58,14 @@ func NewPlansModel(svc *service.PlanService) PlansModel {
 
 func (m PlansModel) Init() tea.Cmd {
 	return m.loadCmd()
+}
+
+func (m PlansModel) Loaded() bool {
+	return m.loaded
+}
+
+func (m PlansModel) NavigationEnabled() bool {
+	return m.state == plansListState
 }
 
 func (m PlansModel) loadCmd() tea.Cmd {
@@ -267,9 +266,6 @@ func newPlanForm(p *domain.Plan) planForm {
 
 func (m PlansModel) View() string {
 	var b strings.Builder
-	b.WriteString(plansTitleStyle.Render("Plans"))
-	b.WriteString("\n\n")
-
 	switch m.state {
 	case plansListState:
 		b.WriteString(m.listView())
@@ -294,11 +290,11 @@ func (m PlansModel) listView() string {
 
 	if m.status != "" {
 		b.WriteString("\n\n")
-		b.WriteString(m.statusLine())
+		b.WriteString(statusLine(m.status))
 	}
 
 	b.WriteString("\n\n")
-	b.WriteString(plansHelpStyle.Render("n: New Plan  •  Enter: Edit  •  d: Delete  •  q: Quit"))
+	b.WriteString(helpStyle.Render("n: New Plan  •  Enter: Edit  •  d: Delete  •  q: Quit"))
 	return b.String()
 }
 
@@ -309,27 +305,27 @@ func (m PlansModel) formView() string {
 	if m.form.id != "" {
 		title = "Edit Target Plan"
 	}
-	b.WriteString(plansTitleStyle.Render(title))
+	b.WriteString(titleStyle.Render(title))
 	b.WriteString("\n\n")
 
 	nameLabel := "Plan Name:"
 	if m.form.nameFocused {
-		nameLabel = plansLabelStyle.Render("Plan Name:")
+		nameLabel = labelStyle.Render("Plan Name:")
 	}
 	b.WriteString(nameLabel + "\n" + m.form.name.View() + "\n\n")
 
 	urlsLabel := "Target URLs (one per line):"
 	if !m.form.nameFocused {
-		urlsLabel = plansLabelStyle.Render("Target URLs (one per line):")
+		urlsLabel = labelStyle.Render("Target URLs (one per line):")
 	}
 	b.WriteString(urlsLabel + "\n" + m.form.urls.View() + "\n")
 
 	if m.status != "" {
-		b.WriteString("\n" + m.statusLine())
+		b.WriteString("\n" + statusLine(m.status))
 	}
 
 	b.WriteString("\n\n")
-	b.WriteString(plansHelpStyle.Render("Tab: Switch Focus  •  Ctrl+S: Save  •  Esc: Cancel"))
+	b.WriteString(helpStyle.Render("Tab: Switch Focus  •  Ctrl+S: Save  •  Esc: Cancel"))
 	return b.String()
 }
 
@@ -337,17 +333,8 @@ func (m PlansModel) deleteView() string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Delete plan '%s'? This cannot be undone.", m.deleteName))
 	b.WriteString("\n\n")
-	b.WriteString(plansHelpStyle.Render("y: Delete  •  any other key: Cancel"))
+	b.WriteString(helpStyle.Render("y: Delete  •  any other key: Cancel"))
 	return b.String()
-}
-
-func (m PlansModel) statusLine() string {
-	style := plansOKStyle
-	lower := strings.ToLower(m.status)
-	if strings.Contains(lower, "fail") || strings.Contains(lower, "required") {
-		style = plansErrStyle
-	}
-	return style.Render(m.status)
 }
 
 func (m *PlansModel) rebuildTable() {
@@ -389,6 +376,7 @@ func (m *PlansModel) rebuildTable() {
 		table.WithFocused(true),
 		table.WithHeight(height),
 	)
+	t.SetStyles(tableStyle())
 	if m.width > 0 {
 		t.SetWidth(m.width - 2)
 	}
