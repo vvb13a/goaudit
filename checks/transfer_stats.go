@@ -4,35 +4,35 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 )
 
 type TransferStatsLogCheck struct {
-	Severity data.Severity
+	Severity domain.Severity
 }
 
 func NewTransferStatsLogCheck() *TransferStatsLogCheck {
 	return &TransferStatsLogCheck{
-		Severity: data.SeverityInfo,
+		Severity: domain.SeverityInfo,
 	}
 }
 
-func (c *TransferStatsLogCheck) Name() string {
-	return "transfer_stats_log"
+func (c *TransferStatsLogCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "transfer_stats_log",
+		Description: "Logs transfer-level timing statistics for the request.",
+		Category:    domain.CategoryPerformance,
+	}
 }
 
-func (c *TransferStatsLogCheck) Checklist() string {
-	return "performance"
-}
-
-func (c *TransferStatsLogCheck) Supports(doc *data.Document) bool {
+func (c *TransferStatsLogCheck) Supports(doc *domain.Document) bool {
 	return true
 }
 
-func (c *TransferStatsLogCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *TransferStatsLogCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	if doc.TransferStats == nil {
-		return []data.Issue{
-			data.NewPassIssue(
+		return []domain.Issue{
+			domain.NewPassIssueWithDetails(
 				c,
 				"Transfer stats were not collected for this request.",
 				map[string]any{
@@ -54,8 +54,8 @@ func (c *TransferStatsLogCheck) Apply(ctx context.Context, doc *data.Document) [
 		"is_https":             stats.IsHTTPS,
 	}
 
-	return []data.Issue{
-		data.NewFailIssue(
+	return []domain.Issue{
+		domain.NewFailIssue(
 			c,
 			c.Severity,
 			fmt.Sprintf("Request completed in %dms.", totalTimeMs),

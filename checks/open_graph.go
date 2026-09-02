@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 
 	"golang.org/x/net/html"
 )
@@ -82,9 +82,9 @@ var (
 )
 
 type OpenGraphCheck struct {
-	MissingRequiredSeverity    data.Severity
-	MissingRecommendedSeverity data.Severity
-	ValidationSeverity         data.Severity
+	MissingRequiredSeverity    domain.Severity
+	MissingRecommendedSeverity domain.Severity
+	ValidationSeverity         domain.Severity
 
 	RequiredProperties    []string
 	RecommendedProperties []string
@@ -94,9 +94,9 @@ type OpenGraphCheck struct {
 
 func NewOpenGraphCheck() *OpenGraphCheck {
 	return &OpenGraphCheck{
-		MissingRequiredSeverity:    data.SeverityError,
-		MissingRecommendedSeverity: data.SeverityWarning,
-		ValidationSeverity:         data.SeverityWarning,
+		MissingRequiredSeverity:    domain.SeverityError,
+		MissingRecommendedSeverity: domain.SeverityWarning,
+		ValidationSeverity:         domain.SeverityWarning,
 
 		RequiredProperties:    []string{"og:title", "og:type", "og:url"},
 		RecommendedProperties: []string{"og:description", "og:locale", "og:site_name", "og:image:alt"},
@@ -105,15 +105,15 @@ func NewOpenGraphCheck() *OpenGraphCheck {
 	}
 }
 
-func (c *OpenGraphCheck) Name() string {
-	return "open_graph"
+func (c *OpenGraphCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "open_graph",
+		Description: "Validates Open Graph meta tags for presence, format, and required properties.",
+		Category:    domain.CategorySEO,
+	}
 }
 
-func (c *OpenGraphCheck) Checklist() string {
-	return "seo"
-}
-
-func (c *OpenGraphCheck) Supports(doc *data.Document) bool {
+func (c *OpenGraphCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
@@ -122,13 +122,13 @@ type ogTagNode struct {
 	Content  string
 }
 
-func (c *OpenGraphCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *OpenGraphCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error during Open Graph check: %s", err.Error()),
 				nil,
 			),
@@ -137,7 +137,7 @@ func (c *OpenGraphCheck) Apply(ctx context.Context, doc *data.Document) []data.I
 
 	presentOgTags := c.findOGTags(root)
 	presentProperties := make(map[string][]string)
-	var detectedIssues []data.Issue
+	var detectedIssues []domain.Issue
 
 	for _, tag := range presentOgTags {
 		property := tag.Property
@@ -146,7 +146,7 @@ func (c *OpenGraphCheck) Apply(ctx context.Context, doc *data.Document) []data.I
 		presentProperties[property] = append(presentProperties[property], content)
 
 		if content == "" {
-			detectedIssues = append(detectedIssues, data.NewFailIssue(
+			detectedIssues = append(detectedIssues, domain.NewFailIssue(
 				c,
 				c.ValidationSeverity,
 				fmt.Sprintf("Open Graph property '%s' has empty content.", property),
@@ -171,20 +171,19 @@ func (c *OpenGraphCheck) Apply(ctx context.Context, doc *data.Document) []data.I
 		return detectedIssues
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssue(
 			c,
 			"Open Graph tags are well-formed and valid.",
-			nil,
 		),
 	}
 }
 
-func (c *OpenGraphCheck) validateContent(detectedIssues *[]data.Issue, property, content, ruleType string) {
+func (c *OpenGraphCheck) validateContent(detectedIssues *[]domain.Issue, property, content, ruleType string) {
 	switch ruleType {
 	case "absolute_url":
 		if !strings.HasPrefix(content, "http://") && !strings.HasPrefix(content, "https://") {
-			*detectedIssues = append(*detectedIssues, data.NewFailIssue(
+			*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 				c,
 				c.ValidationSeverity,
 				fmt.Sprintf("Open Graph property '%s' must be an absolute URL.", property),
@@ -197,7 +196,7 @@ func (c *OpenGraphCheck) validateContent(detectedIssues *[]data.Issue, property,
 		}
 	case "numeric":
 		if _, err := strconv.ParseFloat(content, 64); err != nil {
-			*detectedIssues = append(*detectedIssues, data.NewFailIssue(
+			*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 				c,
 				c.ValidationSeverity,
 				fmt.Sprintf("Open Graph property '%s' must have a numeric value.", property),
@@ -210,7 +209,7 @@ func (c *OpenGraphCheck) validateContent(detectedIssues *[]data.Issue, property,
 		}
 	case "mime_type":
 		if !mimeTypeRegex.MatchString(content) {
-			*detectedIssues = append(*detectedIssues, data.NewFailIssue(
+			*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 				c,
 				c.ValidationSeverity,
 				fmt.Sprintf("Open Graph property '%s' has an invalid MIME type format.", property),
@@ -223,7 +222,7 @@ func (c *OpenGraphCheck) validateContent(detectedIssues *[]data.Issue, property,
 		}
 	case "datetime":
 		if !c.isValidDateTime(content) {
-			*detectedIssues = append(*detectedIssues, data.NewFailIssue(
+			*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 				c,
 				c.ValidationSeverity,
 				fmt.Sprintf("Open Graph property '%s' has an invalid datetime format.", property),
@@ -246,11 +245,11 @@ func (c *OpenGraphCheck) isValidDateTime(val string) bool {
 	return false
 }
 
-func (c *OpenGraphCheck) checkForDuplicates(detectedIssues *[]data.Issue, presentProperties map[string][]string) {
+func (c *OpenGraphCheck) checkForDuplicates(detectedIssues *[]domain.Issue, presentProperties map[string][]string) {
 	for property, values := range presentProperties {
 		if len(values) > 1 {
 			if _, isArrayable := c.ArrayableProperties[property]; !isArrayable {
-				*detectedIssues = append(*detectedIssues, data.NewFailIssue(
+				*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 					c,
 					c.ValidationSeverity,
 					fmt.Sprintf("Multiple Open Graph tags found for non-arrayable property '%s'.", property),
@@ -265,10 +264,10 @@ func (c *OpenGraphCheck) checkForDuplicates(detectedIssues *[]data.Issue, presen
 	}
 }
 
-func (c *OpenGraphCheck) checkForMissing(detectedIssues *[]data.Issue, presentProperties map[string][]string) {
+func (c *OpenGraphCheck) checkForMissing(detectedIssues *[]domain.Issue, presentProperties map[string][]string) {
 	for _, property := range c.RequiredProperties {
 		if _, ok := presentProperties[property]; !ok {
-			*detectedIssues = append(*detectedIssues, data.NewFailIssue(
+			*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 				c,
 				c.MissingRequiredSeverity,
 				fmt.Sprintf("Required Open Graph property '%s' is missing.", property),
@@ -283,7 +282,7 @@ func (c *OpenGraphCheck) checkForMissing(detectedIssues *[]data.Issue, presentPr
 	_, hasImage := presentProperties["og:image"]
 	_, hasImageURL := presentProperties["og:image:url"]
 	if !hasImage && !hasImageURL {
-		*detectedIssues = append(*detectedIssues, data.NewFailIssue(
+		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 			c,
 			c.MissingRequiredSeverity,
 			"Required Open Graph image ('og:image' or 'og:image:url') is missing.",
@@ -296,7 +295,7 @@ func (c *OpenGraphCheck) checkForMissing(detectedIssues *[]data.Issue, presentPr
 
 	for _, property := range c.RecommendedProperties {
 		if _, ok := presentProperties[property]; !ok {
-			*detectedIssues = append(*detectedIssues, data.NewFailIssue(
+			*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 				c,
 				c.MissingRecommendedSeverity,
 				fmt.Sprintf("Recommended Open Graph property '%s' is missing.", property),

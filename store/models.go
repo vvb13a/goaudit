@@ -151,9 +151,10 @@ func (Report) TableName() string { return "reports" }
 
 // ReportModel converts a domain report into a row model. The report row ID is
 // derived from the parent audit ID and the report's position within it.
-func ReportModel(id string, r *domain.Report) *Report {
+func ReportModel(auditID string, id string, r *domain.Report) *Report {
 	return &Report{
 		ID:              id,
+		AuditID:         auditID,
 		URL:             r.URL,
 		FinalURL:        r.FinalURL,
 		StatusCode:      int64(r.StatusCode),

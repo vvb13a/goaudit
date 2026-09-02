@@ -7,44 +7,44 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 
 	"golang.org/x/net/html"
 )
 
 type CanonicalURLCheck struct {
-	MissingSeverity    data.Severity
-	MultipleSeverity   data.Severity
-	InvalidURLSeverity data.Severity
+	MissingSeverity    domain.Severity
+	MultipleSeverity   domain.Severity
+	InvalidURLSeverity domain.Severity
 }
 
 func NewCanonicalURLCheck() *CanonicalURLCheck {
 	return &CanonicalURLCheck{
-		MissingSeverity:    data.SeverityWarning,
-		MultipleSeverity:   data.SeverityError,
-		InvalidURLSeverity: data.SeverityError,
+		MissingSeverity:    domain.SeverityWarning,
+		MultipleSeverity:   domain.SeverityError,
+		InvalidURLSeverity: domain.SeverityError,
 	}
 }
 
-func (c *CanonicalURLCheck) Name() string {
-	return "canonical_url"
+func (c *CanonicalURLCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "canonical_url",
+		Description: "Verifies the page declares exactly one valid canonical link tag.",
+		Category:    domain.CategorySEO,
+	}
 }
 
-func (c *CanonicalURLCheck) Checklist() string {
-	return "seo"
-}
-
-func (c *CanonicalURLCheck) Supports(doc *data.Document) bool {
+func (c *CanonicalURLCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *CanonicalURLCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *CanonicalURLCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	node, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error during canonical URL check: %s", err.Error()),
 				nil,
 			),
@@ -55,8 +55,8 @@ func (c *CanonicalURLCheck) Apply(ctx context.Context, doc *data.Document) []dat
 	nodeCount := len(canonicalNodes)
 
 	if nodeCount == 0 {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
 				c.MissingSeverity,
 				"The canonical link tag (<link rel=\"canonical\">) is missing.",
@@ -68,8 +68,8 @@ func (c *CanonicalURLCheck) Apply(ctx context.Context, doc *data.Document) []dat
 	}
 
 	if nodeCount > 1 {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
 				c.MultipleSeverity,
 				fmt.Sprintf("Multiple canonical link tags found (%d). There must be exactly one.", nodeCount),
@@ -84,8 +84,8 @@ func (c *CanonicalURLCheck) Apply(ctx context.Context, doc *data.Document) []dat
 	href := strings.TrimSpace(canonicalNodes[0])
 
 	if href == "" {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
 				c.InvalidURLSeverity,
 				"The canonical link tag has an empty href attribute.",
@@ -97,8 +97,8 @@ func (c *CanonicalURLCheck) Apply(ctx context.Context, doc *data.Document) []dat
 	}
 
 	if !strings.HasPrefix(href, "http://") && !strings.HasPrefix(href, "https://") {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
 				c.InvalidURLSeverity,
 				"The canonical link's href attribute must be an absolute URL.",
@@ -112,8 +112,8 @@ func (c *CanonicalURLCheck) Apply(ctx context.Context, doc *data.Document) []dat
 
 	parsedURL, err := url.ParseRequestURI(href)
 	if err != nil || parsedURL.Host == "" {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
 				c.InvalidURLSeverity,
 				"The canonical link has a malformed URL in its href attribute.",
@@ -125,8 +125,8 @@ func (c *CanonicalURLCheck) Apply(ctx context.Context, doc *data.Document) []dat
 		}
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssueWithDetails(
 			c,
 			"The canonical link tag is present and valid.",
 			map[string]any{

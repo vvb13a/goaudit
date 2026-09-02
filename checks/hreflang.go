@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 
 	"golang.org/x/net/html"
 )
@@ -15,28 +15,28 @@ import (
 var hreflangRegex = regexp.MustCompile(`^[a-z]{2}(-[A-Z]{2})?$|^x-default$`)
 
 type HreflangCheck struct {
-	FormatSeverity               data.Severity
-	RelativeURLSeverity          data.Severity
-	MissingSelfReferenceSeverity data.Severity
+	FormatSeverity               domain.Severity
+	RelativeURLSeverity          domain.Severity
+	MissingSelfReferenceSeverity domain.Severity
 }
 
 func NewHreflangCheck() *HreflangCheck {
 	return &HreflangCheck{
-		FormatSeverity:               data.SeverityError,
-		RelativeURLSeverity:          data.SeverityError,
-		MissingSelfReferenceSeverity: data.SeverityWarning,
+		FormatSeverity:               domain.SeverityError,
+		RelativeURLSeverity:          domain.SeverityError,
+		MissingSelfReferenceSeverity: domain.SeverityWarning,
 	}
 }
 
-func (c *HreflangCheck) Name() string {
-	return "hreflang"
+func (c *HreflangCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "hreflang",
+		Description: "Validates hreflang alternate tags for language format, absolute URLs, and self-references.",
+		Category:    domain.CategorySEO,
+	}
 }
 
-func (c *HreflangCheck) Checklist() string {
-	return "seo"
-}
-
-func (c *HreflangCheck) Supports(doc *data.Document) bool {
+func (c *HreflangCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
@@ -45,13 +45,13 @@ type hreflangTag struct {
 	Href     string
 }
 
-func (c *HreflangCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *HreflangCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error during hreflang check: %s", err.Error()),
 				nil,
 			),
@@ -61,16 +61,15 @@ func (c *HreflangCheck) Apply(ctx context.Context, doc *data.Document) []data.Is
 	tags := c.findHreflangTags(root)
 
 	if len(tags) == 0 {
-		return []data.Issue{
-			data.NewPassIssue(
+		return []domain.Issue{
+			domain.NewPassIssue(
 				c,
 				"No hreflang tags found on the page.",
-				nil,
 			),
 		}
 	}
 
-	var detectedIssues []data.Issue
+	var detectedIssues []domain.Issue
 	languageCodes := make(map[string]string)
 	hasSelfReference := false
 	url := doc.URL
@@ -80,7 +79,7 @@ func (c *HreflangCheck) Apply(ctx context.Context, doc *data.Document) []data.Is
 		href := tag.Href
 
 		if !hreflangRegex.MatchString(hreflang) {
-			detectedIssues = append(detectedIssues, data.NewFailIssue(
+			detectedIssues = append(detectedIssues, domain.NewFailIssue(
 				c,
 				c.FormatSeverity,
 				fmt.Sprintf("Hreflang attribute '%s' has an invalid format.", hreflang),
@@ -93,7 +92,7 @@ func (c *HreflangCheck) Apply(ctx context.Context, doc *data.Document) []data.Is
 		}
 
 		if !strings.HasPrefix(href, "http://") && !strings.HasPrefix(href, "https://") {
-			detectedIssues = append(detectedIssues, data.NewFailIssue(
+			detectedIssues = append(detectedIssues, domain.NewFailIssue(
 				c,
 				c.RelativeURLSeverity,
 				fmt.Sprintf("Hreflang link for '%s' must use an absolute URL.", hreflang),
@@ -106,7 +105,7 @@ func (c *HreflangCheck) Apply(ctx context.Context, doc *data.Document) []data.Is
 		}
 
 		if _, exists := languageCodes[hreflang]; exists {
-			detectedIssues = append(detectedIssues, data.NewFailIssue(
+			detectedIssues = append(detectedIssues, domain.NewFailIssue(
 				c,
 				c.FormatSeverity,
 				fmt.Sprintf("Duplicate hreflang tag found for language code '%s'.", hreflang),
@@ -124,7 +123,7 @@ func (c *HreflangCheck) Apply(ctx context.Context, doc *data.Document) []data.Is
 	}
 
 	if !hasSelfReference {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
 			c.MissingSelfReferenceSeverity,
 			"Hreflang tags are present, but a self-referencing link pointing to the current URL is missing.",
@@ -139,11 +138,10 @@ func (c *HreflangCheck) Apply(ctx context.Context, doc *data.Document) []data.Is
 		return detectedIssues
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssue(
 			c,
 			"All hreflang tags are present and correctly configured.",
-			nil,
 		),
 	}
 }

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 )
 
 type DocumentSizeCheck struct {
@@ -22,19 +22,19 @@ func NewDocumentSizeCheck() *DocumentSizeCheck {
 	}
 }
 
-func (c *DocumentSizeCheck) Name() string {
-	return "document_size"
+func (c *DocumentSizeCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "document_size",
+		Description: "Flags pages whose uncompressed response body is overly large.",
+		Category:    domain.CategoryPerformance,
+	}
 }
 
-func (c *DocumentSizeCheck) Checklist() string {
-	return "performance"
-}
-
-func (c *DocumentSizeCheck) Supports(doc *data.Document) bool {
+func (c *DocumentSizeCheck) Supports(doc *domain.Document) bool {
 	return true
 }
 
-func (c *DocumentSizeCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *DocumentSizeCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	actualSizeBytes := len(doc.Body)
 	actualSizeKb := math.Round((float64(actualSizeBytes)/1024.0)*100) / 100
 
@@ -43,10 +43,10 @@ func (c *DocumentSizeCheck) Apply(ctx context.Context, doc *data.Document) []dat
 	noticeThresholdBytes := c.NoticeThresholdKb * 1024
 
 	if actualSizeBytes > errorThresholdBytes {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Uncompressed response size (%.2f KB) is critically large, exceeding the error threshold of %d KB.", actualSizeKb, c.ErrorThresholdKb),
 				map[string]any{
 					"issue_type":   "critical_size",
@@ -58,10 +58,10 @@ func (c *DocumentSizeCheck) Apply(ctx context.Context, doc *data.Document) []dat
 	}
 
 	if actualSizeBytes > warningThresholdBytes {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityWarning,
+				domain.SeverityWarning,
 				fmt.Sprintf("Uncompressed response size (%.2f KB) is large, exceeding the warning threshold of %d KB.", actualSizeKb, c.WarningThresholdKb),
 				map[string]any{
 					"issue_type":   "large_size",
@@ -73,10 +73,10 @@ func (c *DocumentSizeCheck) Apply(ctx context.Context, doc *data.Document) []dat
 	}
 
 	if actualSizeBytes > noticeThresholdBytes {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityNotice,
+				domain.SeverityNotice,
 				fmt.Sprintf("Uncompressed response size (%.2f KB) is large, exceeding the notice threshold of %d KB.", actualSizeKb, c.NoticeThresholdKb),
 				map[string]any{
 					"issue_type":   "large_size",
@@ -87,8 +87,8 @@ func (c *DocumentSizeCheck) Apply(ctx context.Context, doc *data.Document) []dat
 		}
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssueWithDetails(
 			c,
 			fmt.Sprintf("Uncompressed response size (%.2f KB) is within acceptable limits.", actualSizeKb),
 			map[string]any{

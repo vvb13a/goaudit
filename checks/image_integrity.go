@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 
 	"golang.org/x/net/html"
 )
@@ -14,40 +14,40 @@ import (
 type ImageIntegrityCheck struct {
 	ExcludeJSSrc            bool
 	FlagEmptyAlt            bool
-	EmptyMissingSrcSeverity data.Severity
-	MissingAltSeverity      data.Severity
-	EmptyAltSeverity        data.Severity
+	EmptyMissingSrcSeverity domain.Severity
+	MissingAltSeverity      domain.Severity
+	EmptyAltSeverity        domain.Severity
 }
 
 func NewImageIntegrityCheck() *ImageIntegrityCheck {
 	return &ImageIntegrityCheck{
 		ExcludeJSSrc:            true,
 		FlagEmptyAlt:            true,
-		EmptyMissingSrcSeverity: data.SeverityError,
-		MissingAltSeverity:      data.SeverityWarning,
-		EmptyAltSeverity:        data.SeverityWarning,
+		EmptyMissingSrcSeverity: domain.SeverityError,
+		MissingAltSeverity:      domain.SeverityWarning,
+		EmptyAltSeverity:        domain.SeverityWarning,
 	}
 }
 
-func (c *ImageIntegrityCheck) Name() string {
-	return "image_integrity"
+func (c *ImageIntegrityCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "image_integrity",
+		Description: "Checks that images have a src attribute and appropriate alt text.",
+		Category:    domain.CategoryAccessibility,
+	}
 }
 
-func (c *ImageIntegrityCheck) Checklist() string {
-	return "accessibility"
-}
-
-func (c *ImageIntegrityCheck) Supports(doc *data.Document) bool {
+func (c *ImageIntegrityCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *ImageIntegrityCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *ImageIntegrityCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error processing images: %s", err.Error()),
 				nil,
 			),
@@ -57,23 +57,22 @@ func (c *ImageIntegrityCheck) Apply(ctx context.Context, doc *data.Document) []d
 	images := c.findImages(root)
 
 	if len(images) == 0 {
-		return []data.Issue{
-			data.NewPassIssue(
+		return []domain.Issue{
+			domain.NewPassIssue(
 				c,
 				"No images found on the page to check.",
-				nil,
 			),
 		}
 	}
 
-	var detectedIssues []data.Issue
+	var detectedIssues []domain.Issue
 
 	for _, img := range images {
 		src, hasSrc := c.getAttribute(img, "src")
 		src = strings.TrimSpace(src)
 
 		if !hasSrc || src == "" {
-			detectedIssues = append(detectedIssues, data.NewFailIssue(
+			detectedIssues = append(detectedIssues, domain.NewFailIssue(
 				c,
 				c.EmptyMissingSrcSeverity,
 				"Image tag is missing the \"src\" attribute or it is empty.",
@@ -86,7 +85,7 @@ func (c *ImageIntegrityCheck) Apply(ctx context.Context, doc *data.Document) []d
 
 		altText, hasAlt := c.getAttribute(img, "alt")
 		if !hasAlt {
-			detectedIssues = append(detectedIssues, data.NewFailIssue(
+			detectedIssues = append(detectedIssues, domain.NewFailIssue(
 				c,
 				c.MissingAltSeverity,
 				"Image is missing the alt attribute.",
@@ -100,7 +99,7 @@ func (c *ImageIntegrityCheck) Apply(ctx context.Context, doc *data.Document) []d
 
 		altText = strings.TrimSpace(altText)
 		if c.FlagEmptyAlt && altText == "" {
-			detectedIssues = append(detectedIssues, data.NewFailIssue(
+			detectedIssues = append(detectedIssues, domain.NewFailIssue(
 				c,
 				c.EmptyAltSeverity,
 				"Image has an empty alt attribute (alt=\"\"). This may be intentional for decorative images.",
@@ -116,11 +115,10 @@ func (c *ImageIntegrityCheck) Apply(ctx context.Context, doc *data.Document) []d
 		return detectedIssues
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssue(
 			c,
 			"All images have valid src and appropriate alt attributes.",
-			nil,
 		),
 	}
 }

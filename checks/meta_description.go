@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 
 	"golang.org/x/net/html"
 )
@@ -16,10 +16,10 @@ type MetaDescriptionCheck struct {
 	MinDescriptionLength         *int
 	MaxDescriptionLength         *int
 	LengthWarningOverage         *int
-	MinorLengthDeviationSeverity data.Severity
-	MajorLengthDeviationSeverity data.Severity
-	MissingEmptySeverity         data.Severity
-	MultipleSeverity             data.Severity
+	MinorLengthDeviationSeverity domain.Severity
+	MajorLengthDeviationSeverity domain.Severity
+	MissingEmptySeverity         domain.Severity
+	MultipleSeverity             domain.Severity
 }
 
 func NewMetaDescriptionCheck() *MetaDescriptionCheck {
@@ -27,34 +27,34 @@ func NewMetaDescriptionCheck() *MetaDescriptionCheck {
 		MinDescriptionLength:         intPtr(50),
 		MaxDescriptionLength:         intPtr(160),
 		LengthWarningOverage:         intPtr(20),
-		MinorLengthDeviationSeverity: data.SeverityNotice,
-		MajorLengthDeviationSeverity: data.SeverityWarning,
-		MissingEmptySeverity:         data.SeverityError,
-		MultipleSeverity:             data.SeverityError,
+		MinorLengthDeviationSeverity: domain.SeverityNotice,
+		MajorLengthDeviationSeverity: domain.SeverityWarning,
+		MissingEmptySeverity:         domain.SeverityError,
+		MultipleSeverity:             domain.SeverityError,
 	}
 }
 
-func (c *MetaDescriptionCheck) Name() string {
-	return "meta_description"
+func (c *MetaDescriptionCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "meta_description",
+		Description: "Checks for a single meta description tag of appropriate length.",
+		Category:    domain.CategorySEO,
+	}
 }
 
-func (c *MetaDescriptionCheck) Checklist() string {
-	return "seo"
-}
-
-func (c *MetaDescriptionCheck) Supports(doc *data.Document) bool {
+func (c *MetaDescriptionCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *MetaDescriptionCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
-	var detectedIssues []data.Issue
+func (c *MetaDescriptionCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
+	var detectedIssues []domain.Issue
 
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error during meta description check: %s", err.Error()),
 				nil,
 			),
@@ -65,8 +65,8 @@ func (c *MetaDescriptionCheck) Apply(ctx context.Context, doc *data.Document) []
 	descNodeCount := len(metaDescNodes)
 
 	if descNodeCount == 0 {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
 				c.MissingEmptySeverity,
 				"Missing <meta name=\"description\"> tag.",
@@ -78,7 +78,7 @@ func (c *MetaDescriptionCheck) Apply(ctx context.Context, doc *data.Document) []
 	}
 
 	if descNodeCount > 1 {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
 			c.MultipleSeverity,
 			"Multiple <meta name=\"description\"> tags found.",
@@ -91,7 +91,7 @@ func (c *MetaDescriptionCheck) Apply(ctx context.Context, doc *data.Document) []
 
 	descriptionContent := strings.TrimSpace(metaDescNodes[0])
 	if descriptionContent == "" {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
 			c.MissingEmptySeverity,
 			"<meta name=\"description\"> tag content is empty.",
@@ -107,16 +107,15 @@ func (c *MetaDescriptionCheck) Apply(ctx context.Context, doc *data.Document) []
 		return detectedIssues
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssue(
 			c,
 			"Meta description is present and has appropriate length.",
-			nil,
 		),
 	}
 }
 
-func (c *MetaDescriptionCheck) checkLength(detectedIssues *[]data.Issue, descriptionContent string) {
+func (c *MetaDescriptionCheck) checkLength(detectedIssues *[]domain.Issue, descriptionContent string) {
 	descLength := utf8.RuneCountInString(descriptionContent)
 
 	if c.MaxDescriptionLength != nil && descLength > *c.MaxDescriptionLength {
@@ -129,7 +128,7 @@ func (c *MetaDescriptionCheck) checkLength(detectedIssues *[]data.Issue, descrip
 
 		message := fmt.Sprintf("Title length (%d) exceeds the ideal maximum of %d by %d characters.", descLength, *c.MaxDescriptionLength, overage)
 
-		*detectedIssues = append(*detectedIssues, data.NewFailIssue(
+		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 			c,
 			level,
 			message,
@@ -146,7 +145,7 @@ func (c *MetaDescriptionCheck) checkLength(detectedIssues *[]data.Issue, descrip
 	if c.MinDescriptionLength != nil && descLength < *c.MinDescriptionLength {
 		message := fmt.Sprintf("Title length (%d) is less than the recommended minimum of %d.", descLength, *c.MinDescriptionLength)
 
-		*detectedIssues = append(*detectedIssues, data.NewFailIssue(
+		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 			c,
 			c.MajorLengthDeviationSeverity,
 			message,

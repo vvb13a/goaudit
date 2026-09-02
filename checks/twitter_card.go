@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 
 	"golang.org/x/net/html"
 )
@@ -19,15 +19,15 @@ var allowedTwitterCardTypes = map[string]struct{}{
 }
 
 type TwitterCardCheck struct {
-	MissingRequiredSeverity data.Severity
-	ValidationSeverity      data.Severity
+	MissingRequiredSeverity domain.Severity
+	ValidationSeverity      domain.Severity
 	RequiredProperties      []string
 }
 
 func NewTwitterCardCheck() *TwitterCardCheck {
 	return &TwitterCardCheck{
-		MissingRequiredSeverity: data.SeverityWarning,
-		ValidationSeverity:      data.SeverityWarning,
+		MissingRequiredSeverity: domain.SeverityWarning,
+		ValidationSeverity:      domain.SeverityWarning,
 		RequiredProperties: []string{
 			"twitter:card",
 			"twitter:title",
@@ -37,15 +37,15 @@ func NewTwitterCardCheck() *TwitterCardCheck {
 	}
 }
 
-func (c *TwitterCardCheck) Name() string {
-	return "twitter_card"
+func (c *TwitterCardCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "twitter_card",
+		Description: "Validates Twitter Card meta tags for required properties and values.",
+		Category:    domain.CategorySEO,
+	}
 }
 
-func (c *TwitterCardCheck) Checklist() string {
-	return "seo"
-}
-
-func (c *TwitterCardCheck) Supports(doc *data.Document) bool {
+func (c *TwitterCardCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
@@ -54,13 +54,13 @@ type twitterTagNode struct {
 	Content  string
 }
 
-func (c *TwitterCardCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *TwitterCardCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error during Twitter Card check: %s", err.Error()),
 				nil,
 			),
@@ -69,14 +69,14 @@ func (c *TwitterCardCheck) Apply(ctx context.Context, doc *data.Document) []data
 
 	presentTwitterTags := c.findTwitterTags(root)
 	presentProperties := make(map[string]string)
-	var detectedIssues []data.Issue
+	var detectedIssues []domain.Issue
 
 	for _, tag := range presentTwitterTags {
 		property := tag.Property
 		content := tag.Content
 
 		if _, exists := presentProperties[property]; exists {
-			detectedIssues = append(detectedIssues, data.NewFailIssue(
+			detectedIssues = append(detectedIssues, domain.NewFailIssue(
 				c,
 				c.ValidationSeverity,
 				fmt.Sprintf("Multiple Twitter Card tags found for property '%s'.", property),
@@ -89,7 +89,7 @@ func (c *TwitterCardCheck) Apply(ctx context.Context, doc *data.Document) []data
 		presentProperties[property] = content
 
 		if content == "" {
-			detectedIssues = append(detectedIssues, data.NewFailIssue(
+			detectedIssues = append(detectedIssues, domain.NewFailIssue(
 				c,
 				c.ValidationSeverity,
 				fmt.Sprintf("Twitter Card property '%s' has empty content.", property),
@@ -103,7 +103,7 @@ func (c *TwitterCardCheck) Apply(ctx context.Context, doc *data.Document) []data
 
 	for _, property := range c.RequiredProperties {
 		if _, exists := presentProperties[property]; !exists {
-			detectedIssues = append(detectedIssues, data.NewFailIssue(
+			detectedIssues = append(detectedIssues, domain.NewFailIssue(
 				c,
 				c.MissingRequiredSeverity,
 				fmt.Sprintf("Required Twitter Card property '%s' is missing.", property),
@@ -117,7 +117,7 @@ func (c *TwitterCardCheck) Apply(ctx context.Context, doc *data.Document) []data
 
 	if cardType, ok := presentProperties["twitter:card"]; ok {
 		if _, isValid := allowedTwitterCardTypes[cardType]; !isValid {
-			detectedIssues = append(detectedIssues, data.NewFailIssue(
+			detectedIssues = append(detectedIssues, domain.NewFailIssue(
 				c,
 				c.ValidationSeverity,
 				fmt.Sprintf("Twitter Card property 'twitter:card' has an invalid value '%s'.", cardType),
@@ -133,11 +133,10 @@ func (c *TwitterCardCheck) Apply(ctx context.Context, doc *data.Document) []data
 		return detectedIssues
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssue(
 			c,
 			"All required Twitter Card tags are present and valid.",
-			nil,
 		),
 	}
 }

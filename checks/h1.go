@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 
 	"golang.org/x/net/html"
 )
@@ -16,10 +16,10 @@ type H1Check struct {
 	MaxHeadingLength             *int
 	MinHeadingLength             *int
 	LengthWarningOverage         *int
-	MinorLengthDeviationSeverity data.Severity
-	MajorLengthDeviationSeverity data.Severity
-	MultipleSeverity             data.Severity
-	MissingEmptySeverity         data.Severity
+	MinorLengthDeviationSeverity domain.Severity
+	MajorLengthDeviationSeverity domain.Severity
+	MultipleSeverity             domain.Severity
+	MissingEmptySeverity         domain.Severity
 }
 
 func intPtr(i int) *int {
@@ -31,34 +31,34 @@ func NewH1Check() *H1Check {
 		MaxHeadingLength:             intPtr(70),
 		MinHeadingLength:             intPtr(20),
 		LengthWarningOverage:         intPtr(15),
-		MinorLengthDeviationSeverity: data.SeverityNotice,
-		MajorLengthDeviationSeverity: data.SeverityWarning,
-		MultipleSeverity:             data.SeverityError,
-		MissingEmptySeverity:         data.SeverityError,
+		MinorLengthDeviationSeverity: domain.SeverityNotice,
+		MajorLengthDeviationSeverity: domain.SeverityWarning,
+		MultipleSeverity:             domain.SeverityError,
+		MissingEmptySeverity:         domain.SeverityError,
 	}
 }
 
-func (c *H1Check) Name() string {
-	return "h1"
+func (c *H1Check) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "h1",
+		Description: "Ensures the page has exactly one non-empty, reasonably sized <h1> heading.",
+		Category:    domain.CategorySEO,
+	}
 }
 
-func (c *H1Check) Checklist() string {
-	return "seo"
-}
-
-func (c *H1Check) Supports(doc *data.Document) bool {
+func (c *H1Check) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *H1Check) Apply(ctx context.Context, doc *data.Document) []data.Issue {
-	var detectedIssues []data.Issue
+func (c *H1Check) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
+	var detectedIssues []domain.Issue
 
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error during heading check: %s", err.Error()),
 				nil,
 			),
@@ -69,8 +69,8 @@ func (c *H1Check) Apply(ctx context.Context, doc *data.Document) []data.Issue {
 	headingNodeCount := len(h1Nodes)
 
 	if headingNodeCount == 0 {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
 				c.MissingEmptySeverity,
 				"Missing <h1> tag.",
@@ -82,7 +82,7 @@ func (c *H1Check) Apply(ctx context.Context, doc *data.Document) []data.Issue {
 	}
 
 	if headingNodeCount > 1 {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
 			c.MultipleSeverity,
 			"Multiple <h1> tags found.",
@@ -95,7 +95,7 @@ func (c *H1Check) Apply(ctx context.Context, doc *data.Document) []data.Issue {
 
 	headingContent := strings.TrimSpace(c.extractText(h1Nodes[0]))
 	if headingContent == "" {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
 			c.MissingEmptySeverity,
 			"<h1> tag is empty or contains only whitespace.",
@@ -111,16 +111,15 @@ func (c *H1Check) Apply(ctx context.Context, doc *data.Document) []data.Issue {
 		return detectedIssues
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssue(
 			c,
 			"Heading is present and has appropriate length.",
-			nil,
 		),
 	}
 }
 
-func (c *H1Check) checkLength(detectedIssues *[]data.Issue, headingContent string) {
+func (c *H1Check) checkLength(detectedIssues *[]domain.Issue, headingContent string) {
 	headingLength := utf8.RuneCountInString(headingContent)
 
 	if c.MaxHeadingLength != nil && headingLength > *c.MaxHeadingLength {
@@ -133,7 +132,7 @@ func (c *H1Check) checkLength(detectedIssues *[]data.Issue, headingContent strin
 
 		message := fmt.Sprintf("Title length (%d) exceeds the ideal maximum of %d by %d characters.", headingLength, *c.MaxHeadingLength, overage)
 
-		*detectedIssues = append(*detectedIssues, data.NewFailIssue(
+		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 			c,
 			level,
 			message,
@@ -150,7 +149,7 @@ func (c *H1Check) checkLength(detectedIssues *[]data.Issue, headingContent strin
 	if c.MinHeadingLength != nil && headingLength < *c.MinHeadingLength {
 		message := fmt.Sprintf("Title length (%d) is less than the recommended minimum of %d.", headingLength, *c.MinHeadingLength)
 
-		*detectedIssues = append(*detectedIssues, data.NewFailIssue(
+		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 			c,
 			c.MajorLengthDeviationSeverity,
 			message,

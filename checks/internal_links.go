@@ -10,28 +10,28 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vvb13a/goaudit/data"
-	"github.com/vvb13a/goaudit/engine"
+	"github.com/vvb13a/goaudit/domain"
+	"github.com/vvb13a/goaudit/service"
 
 	"golang.org/x/net/html"
 )
 
 type InternalLinksCheck struct {
-	Severity       data.Severity
+	Severity       domain.Severity
 	Timeout        time.Duration
 	MaxConcurrency int
 	Client         *http.Client
-	Cache          *engine.LinkCache
+	Cache          *service.LinkCache
 }
 
-func NewInternalLinksCheck(cache *engine.LinkCache) *InternalLinksCheck {
+func NewInternalLinksCheck(cache *service.LinkCache) *InternalLinksCheck {
 	if cache == nil {
-		cache = engine.NewLinkCache(10 * time.Minute)
+		cache = service.NewLinkCache(10 * time.Minute)
 	}
 	timeout := 5 * time.Second
 
 	return &InternalLinksCheck{
-		Severity:       data.SeverityError,
+		Severity:       domain.SeverityError,
 		Timeout:        timeout,
 		MaxConcurrency: 10,
 		Cache:          cache,
@@ -47,25 +47,25 @@ func NewInternalLinksCheck(cache *engine.LinkCache) *InternalLinksCheck {
 	}
 }
 
-func (c *InternalLinksCheck) Name() string {
-	return "internal_links"
+func (c *InternalLinksCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "internal_links",
+		Description: "Checks that in-page links to the same site resolve successfully.",
+		Category:    domain.CategoryGeneral,
+	}
 }
 
-func (c *InternalLinksCheck) Checklist() string {
-	return "links"
-}
-
-func (c *InternalLinksCheck) Supports(doc *data.Document) bool {
+func (c *InternalLinksCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *InternalLinksCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *InternalLinksCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error during internal link check: %s", err.Error()),
 				nil,
 			),
@@ -79,17 +79,16 @@ func (c *InternalLinksCheck) Apply(ctx context.Context, doc *data.Document) []da
 
 	internalPaths := c.collectInternalPaths(root, baseParsed)
 	if len(internalPaths) == 0 {
-		return []data.Issue{
-			data.NewPassIssue(
+		return []domain.Issue{
+			domain.NewPassIssue(
 				c,
 				"No internal links found to check.",
-				nil,
 			),
 		}
 	}
 
 	var (
-		detectedIssues []data.Issue
+		detectedIssues []domain.Issue
 		toCheck        []string
 		mu             sync.Mutex
 		wg             sync.WaitGroup
@@ -137,11 +136,10 @@ func (c *InternalLinksCheck) Apply(ctx context.Context, doc *data.Document) []da
 		return detectedIssues
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssue(
 			c,
 			"All internal links appear to be valid.",
-			nil,
 		),
 	}
 }
@@ -166,7 +164,7 @@ func (c *InternalLinksCheck) validatePath(ctx context.Context, resolvedURL strin
 	return true, resp.StatusCode, ""
 }
 
-func (c *InternalLinksCheck) buildIssue(path string, statusCode int, errMsg string) data.Issue {
+func (c *InternalLinksCheck) buildIssue(path string, statusCode int, errMsg string) domain.Issue {
 	details := map[string]any{
 		"issue_type": "unroutable_link",
 		"link_path":  path,
@@ -178,7 +176,7 @@ func (c *InternalLinksCheck) buildIssue(path string, statusCode int, errMsg stri
 		details["error_message"] = errMsg
 	}
 
-	return data.NewFailIssue(
+	return domain.NewFailIssue(
 		c,
 		c.Severity,
 		fmt.Sprintf("Internal link appears to be broken. Path '%s' is not routable.", path),

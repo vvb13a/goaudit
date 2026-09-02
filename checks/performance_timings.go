@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 )
 
 type PerformanceTimingsCheck struct {
@@ -16,7 +16,7 @@ type PerformanceTimingsCheck struct {
 	ServerProcessingErrorMs   int64
 	TotalTimeWarningMs        int64
 	TotalTimeErrorMs          int64
-	Severity                  data.Severity
+	Severity                  domain.Severity
 }
 
 func NewPerformanceTimingsCheck() *PerformanceTimingsCheck {
@@ -29,41 +29,41 @@ func NewPerformanceTimingsCheck() *PerformanceTimingsCheck {
 		ServerProcessingErrorMs:   400,
 		TotalTimeWarningMs:        1000,
 		TotalTimeErrorMs:          2000,
-		Severity:                  data.SeverityWarning,
+		Severity:                  domain.SeverityWarning,
 	}
 }
 
-func (c *PerformanceTimingsCheck) Name() string {
-	return "performance_timings"
+func (c *PerformanceTimingsCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "performance_timings",
+		Description: "Flags slow DNS, connection, TLS, server processing, and total request timings.",
+		Category:    domain.CategoryPerformance,
+	}
 }
 
-func (c *PerformanceTimingsCheck) Checklist() string {
-	return "performance"
-}
-
-func (c *PerformanceTimingsCheck) Supports(doc *data.Document) bool {
+func (c *PerformanceTimingsCheck) Supports(doc *domain.Document) bool {
 	return true
 }
 
-func (c *PerformanceTimingsCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *PerformanceTimingsCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	stats := doc.TransferStats
 
 	if stats == nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityInfo,
+				domain.SeverityInfo,
 				"Skipped: Transfer stats were not collected. Enable httptrace to collect phase timings.",
 				nil,
 			),
 		}
 	}
 
-	var detectedIssues []data.Issue
+	var detectedIssues []domain.Issue
 
 	dnsTimeMs := stats.DNSLookup.Milliseconds()
 	if dnsTimeMs > c.DNSWarningMs {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
 			c.Severity,
 			fmt.Sprintf("DNS lookup is slow (%dms).", dnsTimeMs),
@@ -77,7 +77,7 @@ func (c *PerformanceTimingsCheck) Apply(ctx context.Context, doc *data.Document)
 
 	tcpTimeMs := stats.TCPConnection.Milliseconds()
 	if tcpTimeMs > c.TCPConnectionWarningMs {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
 			c.Severity,
 			fmt.Sprintf("TCP connection is slow (%dms).", tcpTimeMs),
@@ -92,7 +92,7 @@ func (c *PerformanceTimingsCheck) Apply(ctx context.Context, doc *data.Document)
 	if stats.IsHTTPS && stats.TLSHandshake > 0 {
 		tlsTimeMs := stats.TLSHandshake.Milliseconds()
 		if tlsTimeMs > c.TLSHandshakeWarningMs {
-			detectedIssues = append(detectedIssues, data.NewFailIssue(
+			detectedIssues = append(detectedIssues, domain.NewFailIssue(
 				c,
 				c.Severity,
 				fmt.Sprintf("TLS handshake is slow (%dms).", tlsTimeMs),
@@ -107,9 +107,9 @@ func (c *PerformanceTimingsCheck) Apply(ctx context.Context, doc *data.Document)
 
 	serverTimeMs := stats.ServerProcessing.Milliseconds()
 	if serverTimeMs > c.ServerProcessingErrorMs {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
-			data.SeverityError,
+			domain.SeverityError,
 			fmt.Sprintf("Server processing time is critically slow (%dms).", serverTimeMs),
 			map[string]any{
 				"issue_type":   "slow_server_critical",
@@ -118,9 +118,9 @@ func (c *PerformanceTimingsCheck) Apply(ctx context.Context, doc *data.Document)
 			},
 		))
 	} else if serverTimeMs > c.ServerProcessingWarningMs {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
-			data.SeverityWarning,
+			domain.SeverityWarning,
 			fmt.Sprintf("Server processing time is slow (%dms).", serverTimeMs),
 			map[string]any{
 				"issue_type":   "slow_server_warning",
@@ -129,9 +129,9 @@ func (c *PerformanceTimingsCheck) Apply(ctx context.Context, doc *data.Document)
 			},
 		))
 	} else if serverTimeMs > c.ServerProcessingNoticeMs {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
-			data.SeverityNotice,
+			domain.SeverityNotice,
 			fmt.Sprintf("Server processing time is slow (%dms).", serverTimeMs),
 			map[string]any{
 				"issue_type":   "slow_server_notice",
@@ -143,9 +143,9 @@ func (c *PerformanceTimingsCheck) Apply(ctx context.Context, doc *data.Document)
 
 	totalTimeMs := stats.TotalTime.Milliseconds()
 	if totalTimeMs > c.TotalTimeErrorMs {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
-			data.SeverityError,
+			domain.SeverityError,
 			fmt.Sprintf("Total request time is critically slow (%dms).", totalTimeMs),
 			map[string]any{
 				"issue_type":   "slow_total_critical",
@@ -154,7 +154,7 @@ func (c *PerformanceTimingsCheck) Apply(ctx context.Context, doc *data.Document)
 			},
 		))
 	} else if totalTimeMs > c.TotalTimeWarningMs {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
 			c.Severity,
 			fmt.Sprintf("Total request time is slow (%dms).", totalTimeMs),
@@ -170,8 +170,8 @@ func (c *PerformanceTimingsCheck) Apply(ctx context.Context, doc *data.Document)
 		return detectedIssues
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssueWithDetails(
 			c,
 			fmt.Sprintf("Performance timings are good (Server: %dms, Total: %dms).", serverTimeMs, totalTimeMs),
 			map[string]any{

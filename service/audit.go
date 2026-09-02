@@ -21,7 +21,7 @@ func NewAuditService(db *gorm.DB) *AuditService {
 func (s *AuditService) Create(ctx context.Context, a *domain.Audit) error {
 	reportModels := make([]*store.Report, 0, len(a.Reports))
 	for i, r := range a.Reports {
-		reportModels = append(reportModels, store.ReportModel(fmt.Sprintf("%s_r_%d", a.ID, i+1), r))
+		reportModels = append(reportModels, store.ReportModel(a.ID, fmt.Sprintf("%s_r_%d", a.ID, i+1), r))
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

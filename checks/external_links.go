@@ -10,28 +10,28 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vvb13a/goaudit/data"
-	"github.com/vvb13a/goaudit/engine"
+	"github.com/vvb13a/goaudit/domain"
+	"github.com/vvb13a/goaudit/service"
 
 	"golang.org/x/net/html"
 )
 
 type ExternalLinksCheck struct {
-	Severity       data.Severity
+	Severity       domain.Severity
 	Timeout        time.Duration
 	MaxConcurrency int
 	Client         *http.Client
-	Cache          *engine.LinkCache
+	Cache          *service.LinkCache
 }
 
-func NewExternalLinksCheck(cache *engine.LinkCache) *ExternalLinksCheck {
+func NewExternalLinksCheck(cache *service.LinkCache) *ExternalLinksCheck {
 	if cache == nil {
-		cache = engine.NewLinkCache(10 * time.Minute)
+		cache = service.NewLinkCache(10 * time.Minute)
 	}
 	timeout := 5 * time.Second
 
 	return &ExternalLinksCheck{
-		Severity:       data.SeverityWarning,
+		Severity:       domain.SeverityWarning,
 		Timeout:        timeout,
 		MaxConcurrency: 10,
 		Cache:          cache,
@@ -47,25 +47,25 @@ func NewExternalLinksCheck(cache *engine.LinkCache) *ExternalLinksCheck {
 	}
 }
 
-func (c *ExternalLinksCheck) Name() string {
-	return "external_links"
+func (c *ExternalLinksCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "external_links",
+		Description: "Checks that outbound links on the page are reachable.",
+		Category:    domain.CategoryGeneral,
+	}
 }
 
-func (c *ExternalLinksCheck) Checklist() string {
-	return "links"
-}
-
-func (c *ExternalLinksCheck) Supports(doc *data.Document) bool {
+func (c *ExternalLinksCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *ExternalLinksCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *ExternalLinksCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error during external link check: %s", err.Error()),
 				nil,
 			),
@@ -74,17 +74,16 @@ func (c *ExternalLinksCheck) Apply(ctx context.Context, doc *data.Document) []da
 
 	externalUrls := c.collectExternalUrls(root, doc)
 	if len(externalUrls) == 0 {
-		return []data.Issue{
-			data.NewPassIssue(
+		return []domain.Issue{
+			domain.NewPassIssue(
 				c,
 				"No external links found to check.",
-				nil,
 			),
 		}
 	}
 
 	var (
-		detectedIssues []data.Issue
+		detectedIssues []domain.Issue
 		toCheck        []string
 		mu             sync.Mutex
 		wg             sync.WaitGroup
@@ -131,8 +130,8 @@ func (c *ExternalLinksCheck) Apply(ctx context.Context, doc *data.Document) []da
 		return detectedIssues
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssueWithDetails(
 			c,
 			"All external links are accessible.",
 			map[string]any{
@@ -162,9 +161,9 @@ func (c *ExternalLinksCheck) validateExternalURL(ctx context.Context, targetURL 
 	return true, resp.StatusCode, ""
 }
 
-func (c *ExternalLinksCheck) buildIssue(targetURL string, statusCode int, errMsg string) data.Issue {
+func (c *ExternalLinksCheck) buildIssue(targetURL string, statusCode int, errMsg string) domain.Issue {
 	if errMsg != "" {
-		return data.NewFailIssue(
+		return domain.NewFailIssue(
 			c,
 			c.Severity,
 			"Could not connect to the external link.",
@@ -176,7 +175,7 @@ func (c *ExternalLinksCheck) buildIssue(targetURL string, statusCode int, errMsg
 		)
 	}
 
-	return data.NewFailIssue(
+	return domain.NewFailIssue(
 		c,
 		c.Severity,
 		fmt.Sprintf("External link is broken or inaccessible. Responded with status code: %d", statusCode),
@@ -188,7 +187,7 @@ func (c *ExternalLinksCheck) buildIssue(targetURL string, statusCode int, errMsg
 	)
 }
 
-func (c *ExternalLinksCheck) collectExternalUrls(root *html.Node, doc *data.Document) []string {
+func (c *ExternalLinksCheck) collectExternalUrls(root *html.Node, doc *domain.Document) []string {
 	baseParsed, err := url.Parse(doc.URL)
 	if err != nil {
 		return nil

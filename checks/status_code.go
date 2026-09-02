@@ -4,46 +4,46 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 )
 
 type StatusCodeCheck struct {
-	RedirectSeverity         data.Severity
-	ClientErrorSeverity      data.Severity
-	ServerErrorSeverity      data.Severity
-	UnexpectedStatusSeverity data.Severity
+	RedirectSeverity         domain.Severity
+	ClientErrorSeverity      domain.Severity
+	ServerErrorSeverity      domain.Severity
+	UnexpectedStatusSeverity domain.Severity
 }
 
 func NewStatusCodeCheck() *StatusCodeCheck {
 	return &StatusCodeCheck{
-		RedirectSeverity:         data.SeverityWarning,
-		ClientErrorSeverity:      data.SeverityError,
-		ServerErrorSeverity:      data.SeverityFatal,
-		UnexpectedStatusSeverity: data.SeverityError,
+		RedirectSeverity:         domain.SeverityWarning,
+		ClientErrorSeverity:      domain.SeverityError,
+		ServerErrorSeverity:      domain.SeverityFatal,
+		UnexpectedStatusSeverity: domain.SeverityError,
 	}
 }
 
-func (c *StatusCodeCheck) Name() string {
-	return "status_code"
+func (c *StatusCodeCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "status_code",
+		Description: "Evaluates the HTTP response status code of the page.",
+		Category:    domain.CategoryGeneral,
+	}
 }
 
-func (c *StatusCodeCheck) Checklist() string {
-	return "resilience"
-}
-
-func (c *StatusCodeCheck) Supports(doc *data.Document) bool {
+func (c *StatusCodeCheck) Supports(doc *domain.Document) bool {
 	return true
 }
 
-func (c *StatusCodeCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *StatusCodeCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	statusCode := doc.StatusCode
 	details := map[string]any{
 		"status_code": statusCode,
 	}
 
 	if statusCode >= 200 && statusCode < 300 {
-		return []data.Issue{
-			data.NewPassIssue(
+		return []domain.Issue{
+			domain.NewPassIssueWithDetails(
 				c,
 				fmt.Sprintf("Status code (%d) indicates success.", statusCode),
 				details,
@@ -52,9 +52,9 @@ func (c *StatusCodeCheck) Apply(ctx context.Context, doc *data.Document) []data.
 	}
 
 	if statusCode >= 300 && statusCode < 400 {
-		if c.RedirectSeverity == data.SeveritySuccess {
-			return []data.Issue{
-				data.NewPassIssue(
+		if c.RedirectSeverity == domain.SeveritySuccess {
+			return []domain.Issue{
+				domain.NewPassIssueWithDetails(
 					c,
 					fmt.Sprintf("Page redirected (%d) as expected.", statusCode),
 					details,
@@ -64,8 +64,8 @@ func (c *StatusCodeCheck) Apply(ctx context.Context, doc *data.Document) []data.
 
 		details["redirect_location"] = doc.Headers.Get("Location")
 
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
 				c.RedirectSeverity,
 				fmt.Sprintf("Page redirected (%d).", statusCode),
@@ -75,8 +75,8 @@ func (c *StatusCodeCheck) Apply(ctx context.Context, doc *data.Document) []data.
 	}
 
 	if statusCode >= 400 && statusCode < 500 {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
 				c.ClientErrorSeverity,
 				fmt.Sprintf("Client error response (%d).", statusCode),
@@ -86,8 +86,8 @@ func (c *StatusCodeCheck) Apply(ctx context.Context, doc *data.Document) []data.
 	}
 
 	if statusCode >= 500 && statusCode < 600 {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
 				c.ServerErrorSeverity,
 				fmt.Sprintf("Server error response (%d).", statusCode),
@@ -96,8 +96,8 @@ func (c *StatusCodeCheck) Apply(ctx context.Context, doc *data.Document) []data.
 		}
 	}
 
-	return []data.Issue{
-		data.NewFailIssue(
+	return []domain.Issue{
+		domain.NewFailIssue(
 			c,
 			c.UnexpectedStatusSeverity,
 			fmt.Sprintf("Received unexpected status code: %d.", statusCode),

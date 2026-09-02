@@ -6,40 +6,40 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 
 	"golang.org/x/net/html"
 )
 
 type EnforceHTTPSCheck struct {
-	PageInsecureSeverity data.Severity
-	LinkInsecureSeverity data.Severity
+	PageInsecureSeverity domain.Severity
+	LinkInsecureSeverity domain.Severity
 }
 
 func NewEnforceHTTPSCheck() *EnforceHTTPSCheck {
 	return &EnforceHTTPSCheck{
-		PageInsecureSeverity: data.SeverityError,
-		LinkInsecureSeverity: data.SeverityError,
+		PageInsecureSeverity: domain.SeverityError,
+		LinkInsecureSeverity: domain.SeverityError,
 	}
 }
 
-func (c *EnforceHTTPSCheck) Name() string {
-	return "enforce_https"
+func (c *EnforceHTTPSCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "enforce_https",
+		Description: "Ensures the page and its navigational links are served over HTTPS.",
+		Category:    domain.CategorySecurity,
+	}
 }
 
-func (c *EnforceHTTPSCheck) Checklist() string {
-	return "security"
-}
-
-func (c *EnforceHTTPSCheck) Supports(doc *data.Document) bool {
+func (c *EnforceHTTPSCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *EnforceHTTPSCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
-	var issues []data.Issue
+func (c *EnforceHTTPSCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
+	var issues []domain.Issue
 
 	if !strings.HasPrefix(doc.URL, "https://") {
-		issues = append(issues, data.NewFailIssue(
+		issues = append(issues, domain.NewFailIssue(
 			c,
 			c.PageInsecureSeverity,
 			"The page itself is not served over a secure HTTPS connection.",
@@ -52,10 +52,10 @@ func (c *EnforceHTTPSCheck) Apply(ctx context.Context, doc *data.Document) []dat
 
 	node, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error during HTTPS enforcement check: %s", err.Error()),
 				nil,
 			),
@@ -64,7 +64,7 @@ func (c *EnforceHTTPSCheck) Apply(ctx context.Context, doc *data.Document) []dat
 
 	insecureLinks := c.findInsecureLinks(node)
 	for _, href := range insecureLinks {
-		issues = append(issues, data.NewFailIssue(
+		issues = append(issues, domain.NewFailIssue(
 			c,
 			c.LinkInsecureSeverity,
 			"Navigational link points to an insecure HTTP URL.",
@@ -79,11 +79,10 @@ func (c *EnforceHTTPSCheck) Apply(ctx context.Context, doc *data.Document) []dat
 		return issues
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssue(
 			c,
 			"The page and all its navigational links use secure HTTPS.",
-			nil,
 		),
 	}
 }

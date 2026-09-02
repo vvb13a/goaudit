@@ -6,44 +6,44 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 
 	"golang.org/x/net/html"
 )
 
 type RobotsMetaCheck struct {
-	NoindexSeverity  data.Severity
-	NofollowSeverity data.Severity
-	MultipleSeverity data.Severity
+	NoindexSeverity  domain.Severity
+	NofollowSeverity domain.Severity
+	MultipleSeverity domain.Severity
 }
 
 func NewRobotsMetaCheck() *RobotsMetaCheck {
 	return &RobotsMetaCheck{
-		NoindexSeverity:  data.SeverityInfo,
-		NofollowSeverity: data.SeverityInfo,
-		MultipleSeverity: data.SeverityError,
+		NoindexSeverity:  domain.SeverityInfo,
+		NofollowSeverity: domain.SeverityInfo,
+		MultipleSeverity: domain.SeverityError,
 	}
 }
 
-func (c *RobotsMetaCheck) Name() string {
-	return "robots_meta"
+func (c *RobotsMetaCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "robots_meta",
+		Description: "Reports on robots meta directives and duplicate tag issues.",
+		Category:    domain.CategorySEO,
+	}
 }
 
-func (c *RobotsMetaCheck) Checklist() string {
-	return "seo"
-}
-
-func (c *RobotsMetaCheck) Supports(doc *data.Document) bool {
+func (c *RobotsMetaCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *RobotsMetaCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *RobotsMetaCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error during robots meta check: %s", err.Error()),
 				nil,
 			),
@@ -54,19 +54,18 @@ func (c *RobotsMetaCheck) Apply(ctx context.Context, doc *data.Document) []data.
 	robotsNodeCount := len(robotsNodes)
 
 	if robotsNodeCount == 0 {
-		return []data.Issue{
-			data.NewPassIssue(
+		return []domain.Issue{
+			domain.NewPassIssue(
 				c,
 				"No robots meta tag found; crawlers will use default behavior.",
-				nil,
 			),
 		}
 	}
 
-	var detectedIssues []data.Issue
+	var detectedIssues []domain.Issue
 
 	if robotsNodeCount > 1 {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
 			c.MultipleSeverity,
 			"Multiple robots meta tags found. Directives should be consolidated into one tag.",
@@ -80,7 +79,7 @@ func (c *RobotsMetaCheck) Apply(ctx context.Context, doc *data.Document) []data.
 	content := strings.ToLower(strings.TrimSpace(robotsNodes[0]))
 
 	if strings.Contains(content, "noindex") {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
 			c.NoindexSeverity,
 			"A 'noindex' directive was found in the robots meta tag, which will prevent this page from being indexed by search engines.",
@@ -92,7 +91,7 @@ func (c *RobotsMetaCheck) Apply(ctx context.Context, doc *data.Document) []data.
 	}
 
 	if strings.Contains(content, "nofollow") {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
 			c.NofollowSeverity,
 			"A 'nofollow' directive was found in the robots meta tag, which will prevent search engines from following links on this page.",
@@ -107,11 +106,10 @@ func (c *RobotsMetaCheck) Apply(ctx context.Context, doc *data.Document) []data.
 		return detectedIssues
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssue(
 			c,
 			"The robots meta tag is present and does not contain 'noindex' or 'nofollow'.",
-			nil,
 		),
 	}
 }

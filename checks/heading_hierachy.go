@@ -6,30 +6,30 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 
 	"golang.org/x/net/html"
 )
 
 type HeadingHierarchyCheck struct {
-	Severity data.Severity
+	Severity domain.Severity
 }
 
 func NewHeadingHierarchyCheck() *HeadingHierarchyCheck {
 	return &HeadingHierarchyCheck{
-		Severity: data.SeverityWarning,
+		Severity: domain.SeverityWarning,
 	}
 }
 
-func (c *HeadingHierarchyCheck) Name() string {
-	return "heading_hierarchy"
+func (c *HeadingHierarchyCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "heading_hierarchy",
+		Description: "Checks that heading levels progress without skipping levels and start with an <h1>.",
+		Category:    domain.CategorySEO,
+	}
 }
 
-func (c *HeadingHierarchyCheck) Checklist() string {
-	return "seo"
-}
-
-func (c *HeadingHierarchyCheck) Supports(doc *data.Document) bool {
+func (c *HeadingHierarchyCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
@@ -39,13 +39,13 @@ type headingNodeInfo struct {
 	node  *html.Node
 }
 
-func (c *HeadingHierarchyCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *HeadingHierarchyCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error during heading hierarchy check: %s", err.Error()),
 				nil,
 			),
@@ -55,19 +55,18 @@ func (c *HeadingHierarchyCheck) Apply(ctx context.Context, doc *data.Document) [
 	headings := c.collectHeadings(root)
 
 	if len(headings) == 0 {
-		return []data.Issue{
-			data.NewPassIssue(
+		return []domain.Issue{
+			domain.NewPassIssue(
 				c,
 				"No headings present to check.",
-				nil,
 			),
 		}
 	}
 
 	firstHeading := headings[0]
 	if firstHeading.tag != "h1" {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
 				c.Severity,
 				fmt.Sprintf("Heading hierarchy error: The first heading on the page should be an <h1> but found a <%s>.", firstHeading.tag),
@@ -89,8 +88,8 @@ func (c *HeadingHierarchyCheck) Apply(ctx context.Context, doc *data.Document) [
 			violatingTag := fmt.Sprintf("h%d", currentLevel)
 			previousTag := fmt.Sprintf("h%d", lastLevel)
 
-			return []data.Issue{
-				data.NewFailIssue(
+			return []domain.Issue{
+				domain.NewFailIssue(
 					c,
 					c.Severity,
 					fmt.Sprintf("Heading hierarchy error: A <%s> was found following a <%s>, skipping a level.", violatingTag, previousTag),
@@ -107,11 +106,10 @@ func (c *HeadingHierarchyCheck) Apply(ctx context.Context, doc *data.Document) [
 		lastLevel = currentLevel
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssue(
 			c,
 			"Heading hierarchy is valid.",
-			nil,
 		),
 	}
 }

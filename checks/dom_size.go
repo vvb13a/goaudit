@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 
 	"golang.org/x/net/html"
 )
@@ -24,25 +24,25 @@ func NewDomSizeCheck() *DomSizeCheck {
 	}
 }
 
-func (c *DomSizeCheck) Name() string {
-	return "dom_size"
+func (c *DomSizeCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "dom_size",
+		Description: "Flags pages with excessively large DOM node counts.",
+		Category:    domain.CategoryPerformance,
+	}
 }
 
-func (c *DomSizeCheck) Checklist() string {
-	return "performance"
-}
-
-func (c *DomSizeCheck) Supports(doc *data.Document) bool {
+func (c *DomSizeCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *DomSizeCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *DomSizeCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	node, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error during DOM size check: %s", err.Error()),
 				nil,
 			),
@@ -53,10 +53,10 @@ func (c *DomSizeCheck) Apply(ctx context.Context, doc *data.Document) []data.Iss
 
 	// Rule 1: Error Threshold
 	if domNodeCount > c.ErrorThreshold {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("DOM size is critically large (%d elements), exceeding the error threshold of %d.", domNodeCount, c.ErrorThreshold),
 				map[string]any{
 					"issue_type": "critical_size",
@@ -69,10 +69,10 @@ func (c *DomSizeCheck) Apply(ctx context.Context, doc *data.Document) []data.Iss
 
 	// Rule 2: Warning Threshold
 	if domNodeCount > c.WarningThreshold {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityWarning,
+				domain.SeverityWarning,
 				fmt.Sprintf("DOM size is large (%d elements), exceeding the warning threshold of %d.", domNodeCount, c.WarningThreshold),
 				map[string]any{
 					"issue_type": "large_size",
@@ -85,10 +85,10 @@ func (c *DomSizeCheck) Apply(ctx context.Context, doc *data.Document) []data.Iss
 
 	// Rule 3: Notice Threshold
 	if domNodeCount > c.NoticeThreshold {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityNotice,
+				domain.SeverityNotice,
 				fmt.Sprintf("DOM size is large (%d elements), exceeding the notice threshold of %d.", domNodeCount, c.NoticeThreshold),
 				map[string]any{
 					"issue_type": "large_size",
@@ -99,8 +99,8 @@ func (c *DomSizeCheck) Apply(ctx context.Context, doc *data.Document) []data.Iss
 		}
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssueWithDetails(
 			c,
 			fmt.Sprintf("DOM size (%d elements) is within acceptable limits.", domNodeCount),
 			map[string]any{

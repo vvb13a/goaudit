@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 
 	"golang.org/x/net/html"
 )
@@ -15,36 +15,36 @@ import (
 var initialScaleRegex = regexp.MustCompile(`initial-scale\s*=\s*1(\.0)?`)
 
 type ViewportCheck struct {
-	MissingSeverity       data.Severity
-	MisconfiguredSeverity data.Severity
+	MissingSeverity       domain.Severity
+	MisconfiguredSeverity domain.Severity
 }
 
 func NewViewportCheck() *ViewportCheck {
 	return &ViewportCheck{
-		MissingSeverity:       data.SeverityError,
-		MisconfiguredSeverity: data.SeverityError,
+		MissingSeverity:       domain.SeverityError,
+		MisconfiguredSeverity: domain.SeverityError,
 	}
 }
 
-func (c *ViewportCheck) Name() string {
-	return "viewport"
+func (c *ViewportCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "viewport",
+		Description: "Checks for a correctly configured viewport meta tag for mobile devices.",
+		Category:    domain.CategorySEO,
+	}
 }
 
-func (c *ViewportCheck) Checklist() string {
-	return "mobile"
-}
-
-func (c *ViewportCheck) Supports(doc *data.Document) bool {
+func (c *ViewportCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *ViewportCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *ViewportCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error during viewport check: %s", err.Error()),
 				nil,
 			),
@@ -54,8 +54,8 @@ func (c *ViewportCheck) Apply(ctx context.Context, doc *data.Document) []data.Is
 	viewportContents := c.findViewportMetaTags(root)
 
 	if len(viewportContents) == 0 {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
 				c.MissingSeverity,
 				"The viewport meta tag (<meta name=\"viewport\">) is missing.",
@@ -69,8 +69,8 @@ func (c *ViewportCheck) Apply(ctx context.Context, doc *data.Document) []data.Is
 	content := strings.TrimSpace(viewportContents[0])
 
 	if content == "" {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
 				c.MisconfiguredSeverity,
 				"The viewport meta tag has an empty content attribute.",
@@ -81,10 +81,10 @@ func (c *ViewportCheck) Apply(ctx context.Context, doc *data.Document) []data.Is
 		}
 	}
 
-	var detectedIssues []data.Issue
+	var detectedIssues []domain.Issue
 
 	if !strings.Contains(content, "width=device-width") {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
 			c.MisconfiguredSeverity,
 			"Viewport 'content' attribute is missing the required 'width=device-width' directive.",
@@ -96,7 +96,7 @@ func (c *ViewportCheck) Apply(ctx context.Context, doc *data.Document) []data.Is
 	}
 
 	if !initialScaleRegex.MatchString(content) {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
 			c.MisconfiguredSeverity,
 			"Viewport 'content' attribute is missing the required 'initial-scale=1.0' directive.",
@@ -111,11 +111,10 @@ func (c *ViewportCheck) Apply(ctx context.Context, doc *data.Document) []data.Is
 		return detectedIssues
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssue(
 			c,
 			"The viewport meta tag is present and correctly configured.",
-			nil,
 		),
 	}
 }

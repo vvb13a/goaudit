@@ -6,30 +6,30 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 
 	"golang.org/x/net/html"
 )
 
 type MixedContentCheck struct {
-	Severity data.Severity
+	Severity domain.Severity
 }
 
 func NewMixedContentCheck() *MixedContentCheck {
 	return &MixedContentCheck{
-		Severity: data.SeverityError,
+		Severity: domain.SeverityError,
 	}
 }
 
-func (c *MixedContentCheck) Name() string {
-	return "mixed_content"
+func (c *MixedContentCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "mixed_content",
+		Description: "Flags insecure (HTTP) subresources loaded on HTTPS pages.",
+		Category:    domain.CategorySecurity,
+	}
 }
 
-func (c *MixedContentCheck) Checklist() string {
-	return "security"
-}
-
-func (c *MixedContentCheck) Supports(doc *data.Document) bool {
+func (c *MixedContentCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
@@ -38,23 +38,22 @@ type insecureAsset struct {
 	AssetURL string
 }
 
-func (c *MixedContentCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
+func (c *MixedContentCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
 	if strings.HasPrefix(doc.URL, "http://") {
-		return []data.Issue{
-			data.NewPassIssue(
+		return []domain.Issue{
+			domain.NewPassIssue(
 				c,
 				"Skipped: Page is not loaded over HTTPS.",
-				nil,
 			),
 		}
 	}
 
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error during mixed content check: %s", err.Error()),
 				nil,
 			),
@@ -64,9 +63,9 @@ func (c *MixedContentCheck) Apply(ctx context.Context, doc *data.Document) []dat
 	assets := c.findInsecureAssets(root)
 
 	if len(assets) > 0 {
-		var detectedIssues []data.Issue
+		var detectedIssues []domain.Issue
 		for _, asset := range assets {
-			detectedIssues = append(detectedIssues, data.NewFailIssue(
+			detectedIssues = append(detectedIssues, domain.NewFailIssue(
 				c,
 				c.Severity,
 				"Insecure asset loaded on a secure page (mixed content).",
@@ -80,11 +79,10 @@ func (c *MixedContentCheck) Apply(ctx context.Context, doc *data.Document) []dat
 		return detectedIssues
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssue(
 			c,
 			"No mixed content found on the page.",
-			nil,
 		),
 	}
 }

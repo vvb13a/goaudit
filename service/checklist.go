@@ -103,7 +103,7 @@ func (s *ChecklistService) SetActive(ctx context.Context, id string) error {
 	}
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&store.Checklist{}).Update("is_active", false).Error; err != nil {
+		if err := tx.Model(&store.Checklist{}).Where("1 = 1").Update("is_active", false).Error; err != nil {
 			return fmt.Errorf("deactivate checklists: %w", err)
 		}
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/vvb13a/goaudit/data"
+	"github.com/vvb13a/goaudit/domain"
 
 	"golang.org/x/net/html"
 )
@@ -16,10 +16,10 @@ type TitleCheck struct {
 	MinTitleLength               *int
 	MaxTitleLength               *int
 	LengthWarningOverage         int
-	MinorLengthDeviationSeverity data.Severity
-	MajorLengthDeviationSeverity data.Severity
-	MissingEmptySeverity         data.Severity
-	MultipleSeverity             data.Severity
+	MinorLengthDeviationSeverity domain.Severity
+	MajorLengthDeviationSeverity domain.Severity
+	MissingEmptySeverity         domain.Severity
+	MultipleSeverity             domain.Severity
 }
 
 func NewTitleCheck() *TitleCheck {
@@ -27,34 +27,34 @@ func NewTitleCheck() *TitleCheck {
 		MinTitleLength:               intPtr(10),
 		MaxTitleLength:               intPtr(60),
 		LengthWarningOverage:         15,
-		MinorLengthDeviationSeverity: data.SeverityNotice,
-		MajorLengthDeviationSeverity: data.SeverityWarning,
-		MissingEmptySeverity:         data.SeverityError,
-		MultipleSeverity:             data.SeverityError,
+		MinorLengthDeviationSeverity: domain.SeverityNotice,
+		MajorLengthDeviationSeverity: domain.SeverityWarning,
+		MissingEmptySeverity:         domain.SeverityError,
+		MultipleSeverity:             domain.SeverityError,
 	}
 }
 
-func (c *TitleCheck) Name() string {
-	return "title"
+func (c *TitleCheck) Info() domain.CheckInfo {
+	return domain.CheckInfo{
+		Name:        "title",
+		Description: "Checks for a single, non-empty <title> tag of appropriate length.",
+		Category:    domain.CategorySEO,
+	}
 }
 
-func (c *TitleCheck) Checklist() string {
-	return "seo"
-}
-
-func (c *TitleCheck) Supports(doc *data.Document) bool {
+func (c *TitleCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *TitleCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue {
-	var detectedIssues []data.Issue
+func (c *TitleCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
+	var detectedIssues []domain.Issue
 
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
-				data.SeverityError,
+				domain.SeverityError,
 				fmt.Sprintf("Error during title check: %s", err.Error()),
 				nil,
 			),
@@ -65,8 +65,8 @@ func (c *TitleCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue
 	titleNodeCount := len(titleNodes)
 
 	if titleNodeCount == 0 {
-		return []data.Issue{
-			data.NewFailIssue(
+		return []domain.Issue{
+			domain.NewFailIssue(
 				c,
 				c.MissingEmptySeverity,
 				"Missing <title> tag.",
@@ -78,7 +78,7 @@ func (c *TitleCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue
 	}
 
 	if titleNodeCount > 1 {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
 			c.MultipleSeverity,
 			"Multiple <title> tags found.",
@@ -91,7 +91,7 @@ func (c *TitleCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue
 
 	titleContent := strings.TrimSpace(c.extractText(titleNodes[0]))
 	if titleContent == "" {
-		detectedIssues = append(detectedIssues, data.NewFailIssue(
+		detectedIssues = append(detectedIssues, domain.NewFailIssue(
 			c,
 			c.MissingEmptySeverity,
 			"<title> tag is empty or contains only whitespace.",
@@ -107,16 +107,15 @@ func (c *TitleCheck) Apply(ctx context.Context, doc *data.Document) []data.Issue
 		return detectedIssues
 	}
 
-	return []data.Issue{
-		data.NewPassIssue(
+	return []domain.Issue{
+		domain.NewPassIssue(
 			c,
 			"Title is present and has appropriate length.",
-			nil,
 		),
 	}
 }
 
-func (c *TitleCheck) checkLength(detectedIssues *[]data.Issue, titleContent string) {
+func (c *TitleCheck) checkLength(detectedIssues *[]domain.Issue, titleContent string) {
 	titleLength := utf8.RuneCountInString(titleContent)
 
 	if c.MaxTitleLength != nil && titleLength > *c.MaxTitleLength {
@@ -129,7 +128,7 @@ func (c *TitleCheck) checkLength(detectedIssues *[]data.Issue, titleContent stri
 
 		message := fmt.Sprintf("Title length (%d) exceeds the ideal maximum of %d by %d characters.", titleLength, *c.MaxTitleLength, overage)
 
-		*detectedIssues = append(*detectedIssues, data.NewFailIssue(
+		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 			c,
 			level,
 			message,
@@ -146,7 +145,7 @@ func (c *TitleCheck) checkLength(detectedIssues *[]data.Issue, titleContent stri
 	if c.MinTitleLength != nil && titleLength < *c.MinTitleLength {
 		message := fmt.Sprintf("Title length (%d) is less than the recommended minimum of %d.", titleLength, *c.MinTitleLength)
 
-		*detectedIssues = append(*detectedIssues, data.NewFailIssue(
+		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
 			c,
 			c.MajorLengthDeviationSeverity,
 			message,
