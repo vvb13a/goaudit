@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,11 +13,20 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type auditsLoadedMsg struct {
 	audits []*domain.Audit
 	err    error
+}
+
+// auditsDetailMsg carries the fully hydrated audit (reports with issues) for
+// the middle and right panes. id guards against stale responses.
+type auditsDetailMsg struct {
+	id    string
+	audit *domain.Audit
+	err   error
 }
 
 type auditsState int
@@ -26,6 +36,13 @@ const (
 	auditsDeleteState
 	auditsRunningState
 	auditsPromptState
+)
+
+// Panes of the split audits view.
+const (
+	paneAudits = iota
+	paneReports
+	paneIssues
 )
 
 type AuditsModel struct {
@@ -42,14 +59,26 @@ type AuditsModel struct {
 	deleteName   string
 	width        int
 	height       int
+
+	// Split audits/reports/issues view.
+	split         bool
+	focusPane     int
+	detailID      string
+	detailLoading bool
+	detailAudit   *domain.Audit
+	reportIdx     int
+	reportsTable  table.Model
+	issuesTable   table.Model
 }
 
 func NewAuditsModel(deps Deps) AuditsModel {
 	return AuditsModel{
-		deps:     deps,
-		state:    auditsListState,
-		table:    table.New(),
-		progress: NewProgressModel(),
+		deps:         deps,
+		state:        auditsListState,
+		table:        table.New(),
+		reportsTable: table.New(),
+		issuesTable:  table.New(),
+		progress:     NewProgressModel(),
 	}
 }
 
@@ -72,12 +101,26 @@ func (m AuditsModel) loadCmd() tea.Cmd {
 	}
 }
 
+func (m AuditsModel) loadDetailCmd(id string) tea.Cmd {
+	return func() tea.Msg {
+		audit, err := m.deps.AuditService.GetByID(context.Background(), id)
+		if err != nil {
+			return auditsDetailMsg{id: id, err: err}
+		}
+		return auditsDetailMsg{id: id, audit: audit}
+	}
+}
+
 func (m AuditsModel) Update(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.rebuildTable()
+		m.rebuildAuditsTable()
+		if m.split {
+			m.rebuildReportsTable()
+			m.rebuildIssuesTable()
+		}
 		return m, nil
 
 	case auditsLoadedMsg:
@@ -86,7 +129,28 @@ func (m AuditsModel) Update(msg tea.Msg) (AuditsModel, tea.Cmd) {
 			return m, NotifyDanger(fmt.Sprintf("Failed to load audits: %v", msg.err))
 		}
 		m.audits = msg.audits
-		m.rebuildTable()
+		m.rebuildAuditsTable()
+
+		// Default state: open the split on the first audit when history exists.
+		if !m.split && len(m.audits) > 0 {
+			return m.openDetail(m.audits[0].ID, paneAudits)
+		}
+		return m, nil
+
+	case auditsDetailMsg:
+		if msg.id != m.detailID {
+			return m, nil
+		}
+		m.detailLoading = false
+		if msg.err != nil {
+			return m, NotifyDanger(fmt.Sprintf("Failed to load audit details: %v", msg.err))
+		}
+		m.detailAudit = msg.audit
+		if m.reportIdx >= len(msg.audit.Reports) {
+			m.reportIdx = 0
+		}
+		m.rebuildReportsTable()
+		m.rebuildIssuesTable()
 		return m, nil
 
 	case ProgressMsg:
@@ -116,7 +180,13 @@ func (m AuditsModel) Update(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	return m, nil
 }
 
+// ---- List / split handling ----
+
 func (m AuditsModel) updateList(msg tea.Msg) (AuditsModel, tea.Cmd) {
+	if m.split {
+		return m.updateSplit(msg)
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -132,17 +202,20 @@ func (m AuditsModel) updateList(msg tea.Msg) (AuditsModel, tea.Cmd) {
 			m.state = auditsPromptState
 			return m, nil
 		case "r":
-			idx := m.table.Cursor()
-			if idx < len(m.audits) {
-				return m.startRerun(m.audits[idx])
+			if sel := m.selAudit(); sel != nil {
+				return m.startRerun(sel)
 			}
 			return m, nil
 		case "d", "x":
-			idx := m.table.Cursor()
-			if idx < len(m.audits) {
-				m.deleteID = m.audits[idx].ID
-				m.deleteName = m.audits[idx].PlanName
+			if sel := m.selAudit(); sel != nil {
+				m.deleteID = sel.ID
+				m.deleteName = sel.PlanName
 				m.state = auditsDeleteState
+			}
+			return m, nil
+		case "enter", "right", "l":
+			if sel := m.selAudit(); sel != nil {
+				return m.openDetail(sel.ID, paneAudits)
 			}
 			return m, nil
 		}
@@ -152,6 +225,99 @@ func (m AuditsModel) updateList(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	m.table, cmd = m.table.Update(msg)
 	return m, cmd
 }
+
+// updateSplit routes keys to the focused pane. Left/right move the focus
+// across the audits, reports and issues panes; the panes stay in sync with
+// the selected audit/report.
+func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q":
+			return m, tea.Quit
+		case "esc":
+			m.split = false
+			m.detailID = ""
+			m.detailLoading = false
+			m.detailAudit = nil
+			m.rebuildAuditsTable()
+			return m, nil
+		case "left", "h":
+			if m.focusPane > paneAudits {
+				m.focusPane--
+			}
+			return m, nil
+		case "right", "l":
+			if m.focusPane < paneIssues {
+				m.focusPane++
+				if m.focusPane == paneReports && m.detailAudit != nil {
+					m.rebuildReportsTable()
+				}
+			}
+			return m, nil
+		}
+	}
+
+	var cmd tea.Cmd
+	switch m.focusPane {
+	case paneAudits:
+		before := m.table.Cursor()
+		m.table, cmd = m.table.Update(msg)
+		if sel := m.selAudit(); sel != nil && m.table.Cursor() != before {
+			if sel.ID != m.detailID {
+				return m.openDetail(sel.ID, paneAudits)
+			}
+		}
+
+	case paneReports:
+		before := m.reportsTable.Cursor()
+		m.reportsTable, cmd = m.reportsTable.Update(msg)
+		if m.detailAudit != nil && m.reportsTable.Cursor() != before {
+			m.reportIdx = m.reportsTable.Cursor()
+			m.rebuildIssuesTable()
+		}
+
+	case paneIssues:
+		m.issuesTable, cmd = m.issuesTable.Update(msg)
+	}
+	return m, cmd
+}
+
+// openDetail enters (or keeps) the split view for the given audit.
+func (m AuditsModel) openDetail(id string, focusPane int) (AuditsModel, tea.Cmd) {
+	if id != m.detailID {
+		m.detailID = id
+		m.detailLoading = true
+		m.detailAudit = nil
+		m.reportIdx = 0
+	}
+	m.split = true
+	m.focusPane = focusPane
+	m.rebuildAuditsTable()
+	m.rebuildReportsTable()
+	m.rebuildIssuesTable()
+	if m.detailLoading {
+		return m, m.loadDetailCmd(id)
+	}
+	return m, nil
+}
+
+func (m AuditsModel) selAudit() *domain.Audit {
+	idx := m.table.Cursor()
+	if idx < 0 || idx >= len(m.audits) {
+		return nil
+	}
+	return m.audits[idx]
+}
+
+func (m AuditsModel) currentReport() *domain.Report {
+	if m.detailAudit == nil || m.reportIdx < 0 || m.reportIdx >= len(m.detailAudit.Reports) {
+		return nil
+	}
+	return m.detailAudit.Reports[m.reportIdx]
+}
+
+// ---- Other states ----
 
 func (m AuditsModel) updatePrompt(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -178,8 +344,6 @@ func (m AuditsModel) updatePrompt(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	return m, cmd
 }
 
-// startRerun audits the URLs behind a historical audit entry again, using the
-// original plan when it still exists and otherwise the stored report URLs.
 func (m AuditsModel) startRerun(a *domain.Audit) (AuditsModel, tea.Cmd) {
 	plan := &domain.Plan{Name: a.PlanName}
 
@@ -205,7 +369,6 @@ func (m AuditsModel) startRerun(a *domain.Audit) (AuditsModel, tea.Cmd) {
 	return m.startRun(plan, fmt.Sprintf("Rerunning '%s'", a.PlanName))
 }
 
-// startRun launches an audit for the given plan against the active checklist.
 func (m AuditsModel) startRun(plan *domain.Plan, title string) (AuditsModel, tea.Cmd) {
 	checklist, checks, err := prepareRun(m.deps)
 	if err != nil {
@@ -223,15 +386,18 @@ func (m AuditsModel) startRun(plan *domain.Plan, title string) (AuditsModel, tea
 	)
 }
 
-// finishRun restores the model to its list state after a run completes.
 func (m AuditsModel) finishRun() AuditsModel {
 	m.state = auditsListState
+	m.split = false
+	m.detailID = ""
+	m.detailLoading = false
+	m.detailAudit = nil
+	m.reportIdx = 0
 	m.progressCh = nil
 	m.progressDone = nil
 	return m
 }
 
-// markStale forces the next activation to reload the audit history.
 func (m AuditsModel) markStale() AuditsModel {
 	m.loaded = false
 	return m
@@ -261,16 +427,25 @@ func (m AuditsModel) updateDelete(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	}
 }
 
+// ---- Rendering ----
+
+func (m AuditsModel) contentView() string {
+	if m.split {
+		return m.splitView()
+	}
+	return m.listView()
+}
+
 func (m AuditsModel) View() string {
 	switch m.state {
 	case auditsListState:
-		return m.listView()
+		return m.contentView()
 	case auditsDeleteState:
-		return overlay(m.listView(), m.deleteView(), m.width, m.height)
+		return overlay(m.contentView(), m.deleteView(), m.width, m.height)
 	case auditsRunningState:
 		return m.progress.View()
 	case auditsPromptState:
-		return overlay(m.listView(), m.promptView(), m.width, m.height)
+		return overlay(m.contentView(), m.promptView(), m.width, m.height)
 	}
 	return ""
 }
@@ -283,6 +458,66 @@ func (m AuditsModel) listView() string {
 		return "No audits yet. Press 'n' to audit a single URL or run a plan."
 	}
 	return m.table.View()
+}
+
+// splitView renders three equal panes: audits, reports of the selected audit
+// and the issues of the selected report.
+func (m AuditsModel) splitView() string {
+	paneW := m.width / 3
+	if paneW < 16 {
+		return m.listView()
+	}
+
+	left := padLines(strings.Split(m.table.View(), "\n"), m.height, paneW)
+	middle := padLines(strings.Split(m.middlePaneView(), "\n"), m.height, paneW)
+	right := padLines(strings.Split(m.rightPaneView(), "\n"), m.height, paneW)
+
+	divider := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("│")
+
+	var b strings.Builder
+	for i := 0; i < m.height; i++ {
+		b.WriteString(left[i])
+		b.WriteString(divider)
+		b.WriteString(middle[i])
+		b.WriteString(divider)
+		b.WriteString(right[i])
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (m AuditsModel) middlePaneView() string {
+	if m.detailLoading {
+		return "Loading reports..."
+	}
+	if m.detailAudit == nil || len(m.detailAudit.Reports) == 0 {
+		return "No reports."
+	}
+	return m.reportsTable.View()
+}
+
+func (m AuditsModel) rightPaneView() string {
+	if m.detailLoading || m.detailAudit == nil {
+		return ""
+	}
+	if rep := m.currentReport(); rep == nil {
+		return ""
+	} else if len(rep.Issues) == 0 {
+		return "No issues."
+	}
+	return m.issuesTable.View()
+}
+
+func padLines(lines []string, height, width int) []string {
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	for i, l := range lines {
+		if w := lipgloss.Width(l); w < width {
+			lines[i] = l + strings.Repeat(" ", width-w)
+		}
+	}
+	return lines
 }
 
 func (m AuditsModel) deleteView() string {
@@ -305,30 +540,131 @@ func (m AuditsModel) Help() string {
 		return "Audit in progress  •  Ctrl+C: Quit"
 	case auditsPromptState:
 		return "Enter: Run  •  Esc: Cancel"
-	default:
-		return "n: Audit URL  •  r: Rerun  •  d: Delete  •  q: Quit"
+	case auditsListState:
+		if !m.split {
+			return "Enter: Open Audit  •  n: Audit URL  •  r: Rerun  •  d: Delete  •  q: Quit"
+		}
+		switch m.focusPane {
+		case paneAudits:
+			return "→: Reports  •  ↑/↓: Audit  •  Esc: Close  •  q: Quit"
+		case paneReports:
+			return "←: Audits  •  →: Issues  •  ↑/↓: Report  •  Esc: Close  •  q: Quit"
+		default:
+			return "←: Reports  •  ↑/↓: Issue  •  Esc: Close  •  q: Quit"
+		}
 	}
+	return ""
 }
 
-func (m *AuditsModel) rebuildTable() {
-	columns := []table.Column{
-		{Title: "Plan", Width: 22},
-		{Title: "Checklist", Width: 20},
-		{Title: "Started", Width: 17},
-		{Title: "Duration", Width: 11},
-		{Title: "Failed", Width: 8},
-		{Title: "Severity", Width: 10},
+// ---- Tables ----
+
+func (m *AuditsModel) rebuildAuditsTable() {
+	cursor := m.table.Cursor()
+	tableWidth := m.width - 2
+	if m.split {
+		tableWidth = m.width/3 - 2
+	}
+	if tableWidth < 10 {
+		tableWidth = 10
 	}
 
+	var columns []table.Column
 	rows := make([]table.Row, 0, len(m.audits))
-	for _, a := range m.audits {
+
+	if !m.split {
+		columns = []table.Column{
+			{Title: "Plan", Width: 22},
+			{Title: "Checklist", Width: 20},
+			{Title: "Started", Width: 17},
+			{Title: "Duration", Width: 11},
+			{Title: "Failed", Width: 8},
+			{Title: "Severity", Width: 10},
+		}
+		for _, a := range m.audits {
+			rows = append(rows, table.Row{
+				a.PlanName,
+				a.ChecklistName,
+				a.StartedAt.Format("2006-01-02 15:04"),
+				a.Duration.Round(time.Millisecond).String(),
+				fmt.Sprintf("%d", a.Summary.FailedCount),
+				string(a.Summary.HighestSeverity),
+			})
+		}
+	} else {
+		sevW := 7
+		durW := 7
+		startedW := 13
+		planW := tableWidth - sevW - durW - startedW - 6
+		if planW < 8 {
+			planW = 8
+			startedW = tableWidth - sevW - durW - planW - 6
+			if startedW < 8 {
+				startedW = 8
+			}
+		}
+		columns = []table.Column{
+			{Title: "Plan", Width: planW},
+			{Title: "Started", Width: startedW},
+			{Title: "Duration", Width: durW},
+			{Title: "Severity", Width: sevW},
+		}
+		for _, a := range m.audits {
+			rows = append(rows, table.Row{
+				a.PlanName,
+				a.StartedAt.Format("2006-01-02 15:04"),
+				a.Duration.Round(time.Millisecond).String(),
+				string(a.Summary.HighestSeverity),
+			})
+		}
+	}
+
+	height := m.height
+	if m.height <= 0 {
+		height = 10
+	}
+	if height < 3 {
+		height = 3
+	}
+
+	t := table.New(
+		table.WithColumns(columns),
+		table.WithRows(rows),
+		table.WithFocused(true),
+		table.WithHeight(height),
+	)
+	t.SetStyles(tableStyle())
+	t.SetWidth(tableWidth)
+	if len(rows) > 0 {
+		if cursor >= len(rows) {
+			cursor = len(rows) - 1
+		}
+		t.SetCursor(cursor)
+	}
+	m.table = t
+}
+
+func (m *AuditsModel) rebuildReportsTable() {
+	paneW := m.width / 3
+	if m.detailAudit == nil {
+		m.reportsTable = table.New()
+		return
+	}
+
+	resW := 11
+	urlW := paneW - resW - 6
+	if urlW < 10 {
+		urlW = 10
+	}
+	columns := []table.Column{
+		{Title: "Result", Width: resW},
+		{Title: "URL", Width: urlW},
+	}
+
+	rows := make([]table.Row, 0, len(m.detailAudit.Reports))
+	for _, rep := range m.detailAudit.Reports {
 		rows = append(rows, table.Row{
-			a.PlanName,
-			a.ChecklistName,
-			a.StartedAt.Format("2006-01-02 15:04"),
-			a.Duration.Round(time.Millisecond).String(),
-			fmt.Sprintf("%d", a.Summary.FailedCount),
-			string(a.Summary.HighestSeverity),
+			clipCell(reportResult(rep), resW-1),
+			clipCell(rep.URL, urlW-1),
 		})
 	}
 
@@ -347,8 +683,91 @@ func (m *AuditsModel) rebuildTable() {
 		table.WithHeight(height),
 	)
 	t.SetStyles(tableStyle())
-	if m.width > 0 {
-		t.SetWidth(m.width - 2)
+	t.SetWidth(paneW)
+	t.SetCursor(m.reportIdx)
+	m.reportsTable = t
+}
+
+func (m *AuditsModel) rebuildIssuesTable() {
+	paneW := m.width / 3
+	rep := m.currentReport()
+	if rep == nil {
+		m.issuesTable = table.New()
+		return
 	}
-	m.table = t
+
+	sevW := 8
+	checkW := 12
+	msgW := paneW - sevW - checkW - 6
+	if msgW < 10 {
+		checkW = 9
+		msgW = paneW - sevW - checkW - 6
+	}
+	if msgW < 10 {
+		sevW = 7
+		checkW = 0
+		msgW = paneW - sevW - 6
+	}
+
+	var columns []table.Column
+	if checkW > 0 {
+		columns = []table.Column{
+			{Title: "Sev", Width: sevW},
+			{Title: "Check", Width: checkW},
+			{Title: "Issue", Width: msgW},
+		}
+	} else {
+		columns = []table.Column{
+			{Title: "Sev", Width: sevW},
+			{Title: "Issue", Width: msgW},
+		}
+	}
+
+	rows := make([]table.Row, 0, len(rep.Issues))
+	for _, iss := range rep.Issues {
+		row := []string{string(iss.Severity), clipCell(iss.Message, msgW-1)}
+		if checkW > 0 {
+			row = []string{string(iss.Severity), clipCell(iss.CheckName, checkW-1), clipCell(iss.Message, msgW-1)}
+		}
+		rows = append(rows, row)
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		return domain.Severity(rows[i][0]).Weight() > domain.Severity(rows[j][0]).Weight()
+	})
+
+	height := m.height
+	if m.height <= 0 {
+		height = 10
+	}
+	if height < 3 {
+		height = 3
+	}
+
+	t := table.New(
+		table.WithColumns(columns),
+		table.WithRows(rows),
+		table.WithFocused(true),
+		table.WithHeight(height),
+	)
+	t.SetStyles(tableStyle())
+	t.SetWidth(paneW)
+	m.issuesTable = t
+}
+
+func reportResult(rep *domain.Report) string {
+	if rep.Summary.FailedCount > 0 {
+		return fmt.Sprintf("%d fail", rep.Summary.FailedCount)
+	}
+	return "pass"
+}
+
+func clipCell(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	if max <= 1 {
+		return "…"
+	}
+	return string(runes[:max-1]) + "…"
 }
