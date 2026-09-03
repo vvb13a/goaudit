@@ -30,6 +30,7 @@ const (
 	PlansView ViewID = iota
 	ChecklistsView
 	AuditsView
+	HistoryView
 )
 
 // viewSizeMsg replays the content dimensions to a view that just became
@@ -58,12 +59,14 @@ type Model struct {
 	plans         PlansModel
 	checklists    ChecklistsModel
 	audits        AuditsModel
+	history       HistoryModel
 	width         int
 	height        int
 
 	plansSized      bool
 	checklistsSized bool
 	auditsSized     bool
+	historySized    bool
 }
 
 func New(deps Deps) Model {
@@ -73,12 +76,14 @@ func New(deps Deps) Model {
 			{ID: AuditsView, Label: "Audits"},
 			{ID: ChecklistsView, Label: "Checklists"},
 			{ID: PlansView, Label: "Plans"},
+			{ID: HistoryView, Label: "History"},
 		}),
 		footer:        NewFooterModel(),
 		notifications: NewNotificationModel(),
 		plans:         NewPlansModel(deps),
 		checklists:    NewChecklistsModel(deps),
 		audits:        NewAuditsModel(deps),
+		history:       NewHistoryModel(),
 	}
 }
 
@@ -98,6 +103,8 @@ func (m Model) initCmdForActiveView() tea.Cmd {
 		if !m.audits.Loaded() {
 			return m.audits.Init()
 		}
+	case HistoryView:
+		// The session history has no data to load.
 	}
 	return nil
 }
@@ -134,6 +141,8 @@ func (m Model) activateCmd() tea.Cmd {
 		sized = m.checklistsSized
 	case AuditsView:
 		sized = m.auditsSized
+	case HistoryView:
+		sized = m.historySized
 	}
 
 	if m.width > 0 && !sized {
@@ -161,6 +170,8 @@ func (m Model) markViewSized() {
 		m.checklistsSized = true
 	case AuditsView:
 		m.auditsSized = true
+	case HistoryView:
+		m.historySized = true
 	}
 }
 
@@ -174,6 +185,8 @@ func (m Model) viewIsRoot() bool {
 		return m.checklists.NavigationEnabled()
 	case AuditsView:
 		return m.audits.NavigationEnabled()
+	case HistoryView:
+		return m.history.NavigationEnabled()
 	}
 	return false
 }
@@ -205,8 +218,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Global notifications.
 	if nm, ok := msg.(notifyMsg); ok {
-		m.notifications = m.notifications.Push(nm.notification)
-		return m, nil
+		return m.pushNotification(nm.notification), nil
 	}
 
 	// Completed audit runs.
@@ -240,8 +252,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.audits, cmd = m.audits.Update(msg)
 		return m, cmd
+	case HistoryView:
+		var cmd tea.Cmd
+		m.history, cmd = m.history.Update(msg)
+		return m, cmd
 	}
 	return m, nil
+}
+
+// pushNotification records a notification in the header bar and appends it
+// to the session history, keeping both in sync for every notification
+// source.
+func (m Model) pushNotification(n Notification) Model {
+	m.notifications = m.notifications.Push(n)
+	m.history = m.history.Push(n)
+	return m
 }
 
 func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
@@ -261,7 +286,7 @@ func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
 	default:
 		notification = Notification{Kind: NotificationSuccess, Text: fmt.Sprintf("Audit '%s' finished", msg.title)}
 	}
-	m.notifications = m.notifications.Push(notification)
+	m = m.pushNotification(notification)
 
 	m.audits = m.audits.markStale()
 	m.nav = m.nav.Select(msg.target)
@@ -276,6 +301,8 @@ func (m Model) activeViewHelp() string {
 		return m.checklists.Help()
 	case AuditsView:
 		return m.audits.Help()
+	case HistoryView:
+		return m.history.Help()
 	}
 	return ""
 }
@@ -367,6 +394,8 @@ func (m Model) activeViewContent() string {
 		return m.checklists.View()
 	case AuditsView:
 		return m.audits.View()
+	case HistoryView:
+		return m.history.View()
 	}
 	return ""
 }
