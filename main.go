@@ -48,9 +48,10 @@ func main() {
 
 	// 4. Application Services (GORM persistence)
 	excelService := service.NewExcelService("data/excel")
+	htmlService := service.NewHtmlService("data/html")
 	planService := service.NewPlanService(db)
 	checklistService := service.NewChecklistService(db, registry)
-	auditService := service.NewAuditService(db, excelService)
+	auditService := service.NewAuditService(db, excelService, htmlService)
 
 	// 5. Seed Default Active Checklist if first run
 	checklistService.SeedDefault(context.Background())
@@ -64,6 +65,7 @@ func main() {
 		ChecklistService: checklistService,
 		AuditService:     auditService,
 		ExcelService:     excelService,
+		HtmlService:      htmlService,
 	})
 
 	program := tea.NewProgram(app, tea.WithAltScreen())

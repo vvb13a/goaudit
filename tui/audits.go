@@ -159,6 +159,48 @@ func (m AuditsModel) openAuditExcelCmd(a *domain.Audit) tea.Cmd {
 	}
 }
 
+// openAuditHTMLCmd hydrates the full audit (reports with issues), renders
+// it into an HTML report (reusing an existing one instead of regenerating)
+// and opens the report in the default browser.
+func (m AuditsModel) openAuditHTMLCmd(a *domain.Audit) tea.Cmd {
+	return func() tea.Msg {
+		if m.deps.HtmlService == nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: "HTML report is not available",
+			}}
+		}
+
+		full, err := m.deps.AuditService.GetByID(context.Background(), a.ID)
+		if err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Export failed: %v", err),
+			}}
+		}
+
+		path, err := m.deps.HtmlService.ExportAudit(full)
+		if err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Export failed: %v", err),
+			}}
+		}
+
+		if err := openWithDefaultApp(path); err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Failed to open '%s': %v", path, err),
+			}}
+		}
+
+		return notifyMsg{notification: Notification{
+			Kind: NotificationSuccess,
+			Text: fmt.Sprintf("Opened audit report %s", path),
+		}}
+	}
+}
+
 func (m AuditsModel) Update(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -286,6 +328,13 @@ func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
 			if m.focusPane == paneAudits {
 				if sel := m.selAudit(); sel != nil {
 					return m, m.openAuditExcelCmd(sel)
+				}
+			}
+			return m, nil
+		case "w":
+			if m.focusPane == paneAudits {
+				if sel := m.selAudit(); sel != nil {
+					return m, m.openAuditHTMLCmd(sel)
 				}
 			}
 			return m, nil
@@ -807,7 +856,7 @@ func (m AuditsModel) Help() string {
 		}
 		switch m.focusPane {
 		case paneAudits:
-			return "→: Reports  •  ↑/↓: Audit  •  n: URL Audit  •  r: Rerun  •  e: Open Excel  •  d: Delete  •  q: Quit"
+			return "→: Reports  •  ↑/↓: Audit  •  n: URL Audit  •  r: Rerun  •  e: Excel  •  w: HTML  •  d: Delete  •  q: Quit"
 		case paneReports:
 			return "←: Audits  •  →: Issues  •  ↑/↓: Report  •  o: Open in Browser  •  q: Quit"
 		default:
