@@ -20,6 +20,7 @@ type Deps struct {
 	PlanService      *service.PlanService
 	ChecklistService *service.ChecklistService
 	AuditService     *service.AuditService
+	ExcelService     *service.ExcelService
 }
 
 // ViewID identifies which top-level view is currently active.

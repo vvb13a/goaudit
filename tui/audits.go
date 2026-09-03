@@ -118,6 +118,41 @@ func (m AuditsModel) loadDetailCmd(id string) tea.Cmd {
 	}
 }
 
+// exportAuditCmd hydrates the full audit (reports with issues) and renders
+// it into an Excel workbook. Exporting an audit twice reuses the existing
+// workbook instead of regenerating it.
+func (m AuditsModel) exportAuditCmd(a *domain.Audit) tea.Cmd {
+	return func() tea.Msg {
+		if m.deps.ExcelService == nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: "Excel export is not available",
+			}}
+		}
+
+		full, err := m.deps.AuditService.GetByID(context.Background(), a.ID)
+		if err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Export failed: %v", err),
+			}}
+		}
+
+		path, err := m.deps.ExcelService.ExportAudit(full)
+		if err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Export failed: %v", err),
+			}}
+		}
+
+		return notifyMsg{notification: Notification{
+			Kind: NotificationSuccess,
+			Text: fmt.Sprintf("Exported audit to %s", path),
+		}}
+	}
+}
+
 func (m AuditsModel) Update(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -232,6 +267,11 @@ func (m AuditsModel) updateList(msg tea.Msg) (AuditsModel, tea.Cmd) {
 				return m.openDetail(sel.ID, paneAudits)
 			}
 			return m, nil
+		case "e":
+			if sel := m.selAudit(); sel != nil {
+				return m, m.exportAuditCmd(sel)
+			}
+			return m, nil
 		}
 	}
 
@@ -266,6 +306,13 @@ func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
 				m.focusPane++
 				if m.focusPane == paneReports && m.detailAudit != nil {
 					m.rebuildReportsTable()
+				}
+			}
+			return m, nil
+		case "e":
+			if m.focusPane == paneAudits {
+				if sel := m.selAudit(); sel != nil {
+					return m, m.exportAuditCmd(sel)
 				}
 			}
 			return m, nil
@@ -760,11 +807,11 @@ func (m AuditsModel) Help() string {
 			return "Esc: Close Details  •  q: Quit"
 		}
 		if !m.split {
-			return "Enter: Open Audit  •  n: Audit URL  •  r: Rerun  •  d: Delete  •  q: Quit"
+			return "Enter: Open Audit  •  n: Audit URL  •  r: Rerun  •  e: Export Excel  •  d: Delete  •  q: Quit"
 		}
 		switch m.focusPane {
 		case paneAudits:
-			return "→: Reports  •  ↑/↓: Audit  •  Esc: Close  •  q: Quit"
+			return "→: Reports  •  ↑/↓: Audit  •  e: Export Excel  •  Esc: Close  •  q: Quit"
 		case paneReports:
 			return "←: Audits  •  →: Issues  •  ↑/↓: Report  •  o: Open in Browser  •  Esc: Close  •  q: Quit"
 		default:

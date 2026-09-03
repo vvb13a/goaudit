@@ -2,7 +2,10 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -19,11 +22,14 @@ const (
 
 // ExcelService renders domain audits as styled Excel workbooks: a summary
 // sheet with run metadata and issue totals, one row per audited endpoint,
-// and one row per issue.
-type ExcelService struct{}
+// and one row per issue. When given a directory, exported audits are stored
+// there under "<audit id>.xlsx" and generated at most once per audit.
+type ExcelService struct {
+	dir string
+}
 
-func NewExcelService() *ExcelService {
-	return &ExcelService{}
+func NewExcelService(dir string) *ExcelService {
+	return &ExcelService{dir: dir}
 }
 
 // Export renders the audit into an in-memory xlsx workbook and returns its
@@ -50,8 +56,55 @@ func (s *ExcelService) ExportTo(a *domain.Audit, path string) error {
 	}
 	defer f.Close()
 
+	if dir := filepath.Dir(path); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create workbook directory: %w", err)
+		}
+	}
 	if err := f.SaveAs(path); err != nil {
 		return fmt.Errorf("save workbook: %w", err)
+	}
+	return nil
+}
+
+// AuditPath returns the storage path of the xlsx workbook for the given
+// audit ID.
+func (s *ExcelService) AuditPath(auditID string) string {
+	return filepath.Join(s.dir, auditID+".xlsx")
+}
+
+// ExportAudit renders the audit into the service directory and returns the
+// path of the written workbook. Workbooks are generated at most once: if a
+// file already exists for the audit, it is returned untouched.
+func (s *ExcelService) ExportAudit(a *domain.Audit) (string, error) {
+	if a == nil {
+		return "", domain.ErrInvalidAudit
+	}
+	if a.ID == "" {
+		return "", fmt.Errorf("export audit: audit id is empty")
+	}
+
+	path := s.AuditPath(a.ID)
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("check existing workbook: %w", err)
+	}
+
+	if err := s.ExportTo(a, path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// RemoveAuditFile deletes the xlsx workbook stored for the given audit ID,
+// if any. Removing a workbook that was never generated is not an error.
+func (s *ExcelService) RemoveAuditFile(auditID string) error {
+	if auditID == "" {
+		return nil
+	}
+	if err := os.Remove(s.AuditPath(auditID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove workbook: %w", err)
 	}
 	return nil
 }

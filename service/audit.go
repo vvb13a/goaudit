@@ -11,11 +11,12 @@ import (
 )
 
 type AuditService struct {
-	db *gorm.DB
+	db    *gorm.DB
+	excel *ExcelService
 }
 
-func NewAuditService(db *gorm.DB) *AuditService {
-	return &AuditService{db: db}
+func NewAuditService(db *gorm.DB, excel *ExcelService) *AuditService {
+	return &AuditService{db: db, excel: excel}
 }
 
 func (s *AuditService) Create(ctx context.Context, a *domain.Audit) error {
@@ -95,6 +96,14 @@ func (s *AuditService) List(ctx context.Context, filter domain.AuditFilter) ([]*
 }
 
 func (s *AuditService) Delete(ctx context.Context, id string) error {
+	// Remove the exported workbook before the database row so that a failed
+	// cleanup leaves the audit fully intact instead of half-deleted.
+	if s.excel != nil {
+		if err := s.excel.RemoveAuditFile(id); err != nil {
+			return fmt.Errorf("delete audit: %w", err)
+		}
+	}
+
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("audit_id = ?", id).Delete(&store.Report{}).Error; err != nil {
 			return err
