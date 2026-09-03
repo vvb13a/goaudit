@@ -284,6 +284,12 @@ func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
 		}
 
 	case paneReports:
+		if key, ok := msg.(tea.KeyMsg); ok && key.String() == "o" {
+			if rep := m.currentReport(); rep != nil && rep.URL != "" {
+				return m, openInBrowserCmd(rep.URL)
+			}
+			return m, nil
+		}
 		before := m.reportsTable.Cursor()
 		m.reportsTable, cmd = m.reportsTable.Update(msg)
 		if m.detailAudit != nil && m.reportsTable.Cursor() != before {
@@ -760,7 +766,7 @@ func (m AuditsModel) Help() string {
 		case paneAudits:
 			return "→: Reports  •  ↑/↓: Audit  •  Esc: Close  •  q: Quit"
 		case paneReports:
-			return "←: Audits  •  →: Issues  •  ↑/↓: Report  •  Esc: Close  •  q: Quit"
+			return "←: Audits  •  →: Issues  •  ↑/↓: Report  •  o: Open in Browser  •  Esc: Close  •  q: Quit"
 		default:
 			return "←: Reports  •  ↑/↓: Issue  •  Esc: Close  •  q: Quit"
 		}
