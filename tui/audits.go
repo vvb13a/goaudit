@@ -62,7 +62,6 @@ type AuditsModel struct {
 	height       int
 
 	// Split audits/reports/issues view.
-	split         bool
 	focusPane     int
 	detailID      string
 	detailLoading bool
@@ -159,10 +158,8 @@ func (m AuditsModel) Update(msg tea.Msg) (AuditsModel, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.rebuildAuditsTable()
-		if m.split {
-			m.rebuildReportsTable()
-			m.rebuildIssuesTable()
-		}
+		m.rebuildReportsTable()
+		m.rebuildIssuesTable()
 		return m, nil
 
 	case auditsLoadedMsg:
@@ -171,13 +168,23 @@ func (m AuditsModel) Update(msg tea.Msg) (AuditsModel, tea.Cmd) {
 			return m, NotifyDanger(fmt.Sprintf("Failed to load audits: %v", msg.err))
 		}
 		m.audits = msg.audits
+		sort.SliceStable(m.audits, func(i, j int) bool {
+			return m.audits[i].StartedAt.After(m.audits[j].StartedAt)
+		})
 		m.rebuildAuditsTable()
 
-		// Default state: open the split on the first audit when history exists.
-		if !m.split && len(m.audits) > 0 {
-			return m.openDetail(m.audits[0].ID, paneAudits)
+		if len(m.audits) == 0 {
+			return m.closeDetail(), nil
 		}
-		return m, nil
+
+		// Keep showing the selected audit if it still exists, otherwise fall
+		// back to the first audit of the refreshed history.
+		for _, a := range m.audits {
+			if a.ID == m.detailID {
+				return m, nil
+			}
+		}
+		return m.openDetail(m.audits[0].ID, paneAudits)
 
 	case auditsDetailMsg:
 		if msg.id != m.detailID {
@@ -213,7 +220,7 @@ func (m AuditsModel) Update(msg tea.Msg) (AuditsModel, tea.Cmd) {
 
 	switch m.state {
 	case auditsListState:
-		return m.updateList(msg)
+		return m.updateSplit(msg)
 	case auditsDeleteState:
 		return m.updateDelete(msg)
 	case auditsPromptState:
@@ -222,18 +229,18 @@ func (m AuditsModel) Update(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	return m, nil
 }
 
-// ---- List / split handling ----
+// ---- Split view handling ----
 
-func (m AuditsModel) updateList(msg tea.Msg) (AuditsModel, tea.Cmd) {
+// updateSplit routes keys to the focused pane. Left/right move the focus
+// across the audits, reports and issues panes; the panes stay in sync with
+// the selected audit/report. Audit-level actions (adhoc run, rerun, delete,
+// export) are available while the audits pane is focused.
+func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	if m.issueDetailOpen {
 		if key, ok := msg.(tea.KeyMsg); ok && key.String() == "esc" {
 			m.issueDetailOpen = false
 		}
 		return m, nil
-	}
-
-	if m.split {
-		return m.updateSplit(msg)
 	}
 
 	switch msg := msg.(type) {
@@ -242,59 +249,38 @@ func (m AuditsModel) updateList(msg tea.Msg) (AuditsModel, tea.Cmd) {
 		case "q":
 			return m, tea.Quit
 		case "n":
-			ti := textinput.New()
-			ti.Placeholder = "https://example.com/page"
-			ti.CharLimit = 2048
-			ti.Width = 60
-			ti.Focus()
-			m.prompt = ti
-			m.state = auditsPromptState
+			if m.focusPane == paneAudits {
+				ti := textinput.New()
+				ti.Placeholder = "https://example.com/page"
+				ti.CharLimit = 2048
+				ti.Width = 60
+				ti.Focus()
+				m.prompt = ti
+				m.state = auditsPromptState
+			}
 			return m, nil
 		case "r":
-			if sel := m.selAudit(); sel != nil {
-				return m.startRerun(sel)
+			if m.focusPane == paneAudits {
+				if sel := m.selAudit(); sel != nil {
+					return m.startRerun(sel)
+				}
 			}
 			return m, nil
 		case "d", "x":
-			if sel := m.selAudit(); sel != nil {
-				m.deleteID = sel.ID
-				m.deleteName = sel.PlanName
-				m.state = auditsDeleteState
-			}
-			return m, nil
-		case "enter", "right", "l":
-			if sel := m.selAudit(); sel != nil {
-				return m.openDetail(sel.ID, paneAudits)
+			if m.focusPane == paneAudits {
+				if sel := m.selAudit(); sel != nil {
+					m.deleteID = sel.ID
+					m.deleteName = sel.PlanName
+					m.state = auditsDeleteState
+				}
 			}
 			return m, nil
 		case "e":
-			if sel := m.selAudit(); sel != nil {
-				return m, m.exportAuditCmd(sel)
+			if m.focusPane == paneAudits {
+				if sel := m.selAudit(); sel != nil {
+					return m, m.exportAuditCmd(sel)
+				}
 			}
-			return m, nil
-		}
-	}
-
-	var cmd tea.Cmd
-	m.table, cmd = m.table.Update(msg)
-	return m, cmd
-}
-
-// updateSplit routes keys to the focused pane. Left/right move the focus
-// across the audits, reports and issues panes; the panes stay in sync with
-// the selected audit/report.
-func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "q":
-			return m, tea.Quit
-		case "esc":
-			m.split = false
-			m.detailID = ""
-			m.detailLoading = false
-			m.detailAudit = nil
-			m.rebuildAuditsTable()
 			return m, nil
 		case "left", "h":
 			if m.focusPane > paneAudits {
@@ -306,13 +292,6 @@ func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
 				m.focusPane++
 				if m.focusPane == paneReports && m.detailAudit != nil {
 					m.rebuildReportsTable()
-				}
-			}
-			return m, nil
-		case "e":
-			if m.focusPane == paneAudits {
-				if sel := m.selAudit(); sel != nil {
-					return m, m.exportAuditCmd(sel)
 				}
 			}
 			return m, nil
@@ -362,7 +341,8 @@ func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	return m, cmd
 }
 
-// openDetail enters (or keeps) the split view for the given audit.
+// openDetail switches the detail panes to the given audit, loading it when
+// it is not the audit currently shown.
 func (m AuditsModel) openDetail(id string, focusPane int) (AuditsModel, tea.Cmd) {
 	if id != m.detailID {
 		m.detailID = id
@@ -370,7 +350,6 @@ func (m AuditsModel) openDetail(id string, focusPane int) (AuditsModel, tea.Cmd)
 		m.detailAudit = nil
 		m.reportIdx = 0
 	}
-	m.split = true
 	m.focusPane = focusPane
 	m.rebuildAuditsTable()
 	m.rebuildReportsTable()
@@ -379,6 +358,19 @@ func (m AuditsModel) openDetail(id string, focusPane int) (AuditsModel, tea.Cmd)
 		return m, m.loadDetailCmd(id)
 	}
 	return m, nil
+}
+
+// closeDetail drops the audit shown in the detail panes.
+func (m AuditsModel) closeDetail() AuditsModel {
+	m.detailID = ""
+	m.detailLoading = false
+	m.detailAudit = nil
+	m.reportIdx = 0
+	m.reportIssues = nil
+	m.issueDetailOpen = false
+	m.rebuildReportsTable()
+	m.rebuildIssuesTable()
+	return m
 }
 
 func (m AuditsModel) selAudit() *domain.Audit {
@@ -467,11 +459,7 @@ func (m AuditsModel) startRun(plan *domain.Plan, title string) (AuditsModel, tea
 
 func (m AuditsModel) finishRun() AuditsModel {
 	m.state = auditsListState
-	m.split = false
-	m.detailID = ""
-	m.detailLoading = false
-	m.detailAudit = nil
-	m.reportIdx = 0
+	m.closeDetail()
 	m.progressCh = nil
 	m.progressDone = nil
 	return m
@@ -509,10 +497,7 @@ func (m AuditsModel) updateDelete(msg tea.Msg) (AuditsModel, tea.Cmd) {
 // ---- Rendering ----
 
 func (m AuditsModel) contentView() string {
-	if m.split {
-		return m.splitView()
-	}
-	return m.listView()
+	return m.splitView()
 }
 
 func (m AuditsModel) View() string {
@@ -554,7 +539,14 @@ func (m AuditsModel) splitView() string {
 	boxH := m.height - 1
 	innerW := paneW - 2
 
-	left := m.paneView(m.table.View(), innerW, boxH-2)
+	leftContent := m.table.View()
+	if !m.loaded {
+		leftContent = "Loading audits..."
+	} else if len(m.audits) == 0 {
+		leftContent = "No audits yet. Press 'n' to audit a URL."
+	}
+
+	left := m.paneView(leftContent, innerW, boxH-2)
 	middle := m.paneView(m.middlePaneView(), innerW, boxH-2)
 	right := m.paneView(m.rightPaneView(), innerW, boxH-2)
 
@@ -642,14 +634,11 @@ func clipToWidth(s string, w int) string {
 }
 
 // regionHeight is the number of table rows that fit in one pane below the
-// severity widget while in split mode (box borders take two rows).
+// severity widget (box borders take two rows).
 func (m AuditsModel) regionHeight() int {
-	h := m.height
-	if h <= 0 {
+	h := m.height - 3
+	if m.height <= 0 {
 		return 10
-	}
-	if m.split {
-		h -= 3
 	}
 	if h < 1 {
 		return 1
@@ -712,7 +701,10 @@ func (m AuditsModel) middlePaneView() string {
 	if m.detailLoading {
 		return "Loading reports..."
 	}
-	if m.detailAudit == nil || len(m.detailAudit.Reports) == 0 {
+	if m.detailAudit == nil {
+		return "No audit selected."
+	}
+	if len(m.detailAudit.Reports) == 0 {
 		return "No reports."
 	}
 	return m.reportsTable.View()
@@ -806,16 +798,13 @@ func (m AuditsModel) Help() string {
 		if m.issueDetailOpen {
 			return "Esc: Close Details  •  q: Quit"
 		}
-		if !m.split {
-			return "Enter: Open Audit  •  n: Audit URL  •  r: Rerun  •  e: Export Excel  •  d: Delete  •  q: Quit"
-		}
 		switch m.focusPane {
 		case paneAudits:
-			return "→: Reports  •  ↑/↓: Audit  •  e: Export Excel  •  Esc: Close  •  q: Quit"
+			return "→: Reports  •  ↑/↓: Audit  •  n: URL Audit  •  r: Rerun  •  e: Export Excel  •  d: Delete  •  q: Quit"
 		case paneReports:
-			return "←: Audits  •  →: Issues  •  ↑/↓: Report  •  o: Open in Browser  •  Esc: Close  •  q: Quit"
+			return "←: Audits  •  →: Issues  •  ↑/↓: Report  •  o: Open in Browser  •  q: Quit"
 		default:
-			return "←: Reports  •  ↑/↓: Issue  •  Esc: Close  •  q: Quit"
+			return "←: Reports  •  ↑/↓: Issue  •  Enter: Details  •  q: Quit"
 		}
 	}
 	return ""
@@ -825,62 +814,53 @@ func (m AuditsModel) Help() string {
 
 func (m *AuditsModel) rebuildAuditsTable() {
 	cursor := m.table.Cursor()
-	tableWidth := m.width - 2
-	if m.split {
-		tableWidth = m.width/3 - 2
-	}
+	tableWidth := m.width/3 - 2
 	if tableWidth < 10 {
 		tableWidth = 10
 	}
 
-	var columns []table.Column
-	rows := make([]table.Row, 0, len(m.audits))
-
-	if !m.split {
-		columns = []table.Column{
-			{Title: "Plan", Width: 22},
-			{Title: "Checklist", Width: 20},
-			{Title: "Started", Width: 17},
-			{Title: "Duration", Width: 11},
-			{Title: "Failed", Width: 8},
-			{Title: "Severity", Width: 10},
-		}
-		for _, a := range m.audits {
-			rows = append(rows, table.Row{
-				a.PlanName,
-				a.ChecklistName,
-				a.StartedAt.Format("2006-01-02 15:04"),
-				a.Duration.Round(time.Millisecond).String(),
-				fmt.Sprintf("%d", a.Summary.FailedCount),
-				string(a.Summary.HighestSeverity),
-			})
-		}
-	} else {
-		sevW := 7
-		durW := 7
-		startedW := 13
-		planW := tableWidth - sevW - durW - startedW - 6
+	// Column widths never shrink below the length of their header label so
+	// titles are never clipped. The plan column absorbs the spare width.
+	sevW := 8 // "Severity"
+	durW := 8 // "Duration"
+	startedW := 14
+	planW := tableWidth - sevW - durW - startedW
+	if planW < 8 {
+		// Not enough room: fall back to compact relative times ("3h ago").
+		startedW = 8
+		planW = tableWidth - sevW - durW - startedW
 		if planW < 8 {
-			planW = 8
-			startedW = tableWidth - sevW - durW - planW - 6
-			if startedW < 8 {
-				startedW = 8
+			// Still tight: drop the duration column entirely.
+			durW = 0
+			planW = tableWidth - sevW - startedW
+			if planW < 8 {
+				planW = 8
+				startedW = tableWidth - sevW - planW
+				if startedW < 5 {
+					startedW = 5
+				}
 			}
 		}
-		columns = []table.Column{
-			{Title: "Plan", Width: planW},
-			{Title: "Started", Width: startedW},
-			{Title: "Duration", Width: durW},
-			{Title: "Severity", Width: sevW},
+	}
+
+	short := startedW < 14
+	columns := []table.Column{
+		{Title: "Plan", Width: planW},
+		{Title: "Started", Width: startedW},
+	}
+	if durW > 0 {
+		columns = append(columns, table.Column{Title: "Duration", Width: durW})
+	}
+	columns = append(columns, table.Column{Title: "Severity", Width: sevW})
+
+	rows := make([]table.Row, 0, len(m.audits))
+	for _, a := range m.audits {
+		row := table.Row{clipCell(a.PlanName, planW-1), timeAgo(a.StartedAt, short)}
+		if durW > 0 {
+			row = append(row, a.Duration.Round(time.Second).String())
 		}
-		for _, a := range m.audits {
-			rows = append(rows, table.Row{
-				a.PlanName,
-				a.StartedAt.Format("2006-01-02 15:04"),
-				a.Duration.Round(time.Millisecond).String(),
-				string(a.Summary.HighestSeverity),
-			})
-		}
+		row = append(row, string(a.Summary.HighestSeverity))
+		rows = append(rows, row)
 	}
 
 	height := m.regionHeight()
@@ -1024,4 +1004,46 @@ func clipCell(s string, max int) string {
 		return "…"
 	}
 	return string(runes[:max-1]) + "…"
+}
+
+// timeAgo renders a timestamp relative to now as "1 minute ago",
+// "10 days ago", etc. When short is set it degrades to compact forms like
+// "1m ago" that fit a narrow column.
+func timeAgo(t time.Time, short bool) string {
+	d := time.Since(t)
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		if short {
+			return "now"
+		}
+		return "just now"
+	case d < time.Hour:
+		return ago(d, time.Minute, "minute", "m", short)
+	case d < 24*time.Hour:
+		return ago(d, time.Hour, "hour", "h", short)
+	case d < 30*24*time.Hour:
+		return ago(d, 24*time.Hour, "day", "d", short)
+	case d < 365*24*time.Hour:
+		return ago(d, 30*24*time.Hour, "month", "mo", short)
+	default:
+		return ago(d, 365*24*time.Hour, "year", "y", short)
+	}
+}
+
+func ago(d, unit time.Duration, fullUnit, shortUnit string, short bool) string {
+	n := int(d / unit)
+	if n < 1 {
+		n = 1
+	}
+	if short {
+		return fmt.Sprintf("%d%s ago", n, shortUnit)
+	}
+	label := fullUnit
+	if n != 1 {
+		label += "s"
+	}
+	return fmt.Sprintf("%d %s ago", n, label)
 }
