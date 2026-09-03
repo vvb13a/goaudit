@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 
@@ -62,6 +63,14 @@ type Model struct {
 	history       HistoryModel
 	width         int
 	height        int
+
+	// Event cycle timing for the footer metrics: eventStart marks the
+	// beginning of the current (or most recent) user event, cycleActive
+	// stays true while background commands spawned by it are still running,
+	// and lastQuietAt is when the last cycle settled.
+	eventStart  time.Time
+	cycleActive bool
+	lastQuietAt time.Time
 
 	plansSized      bool
 	checklistsSized bool
@@ -191,7 +200,54 @@ func (m Model) viewIsRoot() bool {
 	return false
 }
 
+// cycleTailWindow is how long after an event cycle settled that trailing
+// background messages (e.g. the second half of a tea.Batch) are still
+// attributed to that same event instead of starting a new one.
+const cycleTailWindow = 250 * time.Millisecond
+
+// Update tracks the full lifetime of an event cycle. A cycle starts when an
+// external event (user input, resize) arrives, continues while the event
+// spawns background commands, and ends when an Update returns no further
+// command; the closing View() then reports the total, which therefore
+// includes Update processing, command execution and rendering.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	now := time.Now()
+
+	if isExternalEvent(msg) {
+		// A new user event: whatever the previous cycle was, it is over.
+		m.eventStart = now
+		m.cycleActive = true
+	} else if !m.cycleActive && now.Sub(m.lastQuietAt) > cycleTailWindow {
+		// Stray background message with no originating user event.
+		m.eventStart = now
+		m.cycleActive = true
+	}
+
+	updated, cmd := m.update(msg)
+
+	if root, ok := updated.(Model); ok {
+		if cmd == nil && root.cycleActive {
+			// No further command was spawned: the cycle settles here and
+			// its total is finalized on the upcoming View.
+			root.cycleActive = false
+			root.lastQuietAt = time.Now()
+		}
+		return root, cmd
+	}
+	return updated, cmd
+}
+
+// isExternalEvent reports whether the message originates from the user or
+// the terminal rather than from a background command of this application.
+func isExternalEvent(msg tea.Msg) bool {
+	switch msg.(type) {
+	case tea.KeyMsg, tea.MouseMsg, tea.FocusMsg, tea.BlurMsg, tea.WindowSizeMsg:
+		return true
+	}
+	return false
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if msg, ok := msg.(tea.KeyMsg); ok {
 		switch msg.String() {
 		case "ctrl+c":
@@ -377,10 +433,7 @@ func (m Model) View() string {
 
 	b.WriteString("\n")
 
-	right := ""
-	if m.viewIsRoot() {
-		right = "Tab / Shift+Tab: Switch View"
-	}
+	right := metricsText(m.eventTotal())
 	b.WriteString(m.footer.WithContent(m.activeViewHelp(), right).View())
 
 	return b.String()
@@ -398,6 +451,44 @@ func (m Model) activeViewContent() string {
 		return m.history.View()
 	}
 	return ""
+}
+
+// eventTotal returns the elapsed time of the current event cycle: from the
+// originating user event through every background command it spawned. While
+// commands are still running the total keeps growing; after the cycle
+// settled (or within the tail window of its last message) the total is
+// measured at the closing render, so it includes View time. Renders only
+// happen right after a message, so a settled cycle is never shown stale.
+func (m Model) eventTotal() time.Duration {
+	if m.eventStart.IsZero() {
+		return 0
+	}
+	if m.cycleActive || time.Since(m.lastQuietAt) <= cycleTailWindow {
+		return time.Since(m.eventStart)
+	}
+	return 0
+}
+
+// metricsText reports the current heap usage and the time the last event
+// took end to end (update + background commands + render), for the right
+// side of the footer.
+func metricsText(total time.Duration) string {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+
+	mem := fmt.Sprintf("%.1f MiB", float64(ms.Alloc)/(1<<20))
+	if ms.Alloc < 1<<20 {
+		mem = fmt.Sprintf("%.0f KiB", float64(ms.Alloc)/(1<<10))
+	}
+
+	eventMS := float64(total) / float64(time.Millisecond)
+	if eventMS <= 0 {
+		return fmt.Sprintf("%s  •  –", mem)
+	}
+	if eventMS < 1 {
+		return fmt.Sprintf("%s  •  %.1f ms/event", mem, eventMS)
+	}
+	return fmt.Sprintf("%s  •  %.0f ms/event", mem, eventMS)
 }
 
 // fillLines pads or truncates content so it occupies exactly h lines.
