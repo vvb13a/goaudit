@@ -117,10 +117,10 @@ func (m AuditsModel) loadDetailCmd(id string) tea.Cmd {
 	}
 }
 
-// exportAuditCmd hydrates the full audit (reports with issues) and renders
-// it into an Excel workbook. Exporting an audit twice reuses the existing
-// workbook instead of regenerating it.
-func (m AuditsModel) exportAuditCmd(a *domain.Audit) tea.Cmd {
+// openAuditExcelCmd hydrates the full audit (reports with issues), renders
+// it into an Excel workbook (reusing an existing one instead of
+// regenerating) and opens the workbook with the default xlsx viewer.
+func (m AuditsModel) openAuditExcelCmd(a *domain.Audit) tea.Cmd {
 	return func() tea.Msg {
 		if m.deps.ExcelService == nil {
 			return notifyMsg{notification: Notification{
@@ -145,9 +145,16 @@ func (m AuditsModel) exportAuditCmd(a *domain.Audit) tea.Cmd {
 			}}
 		}
 
+		if err := openWithDefaultApp(path); err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Failed to open '%s': %v", path, err),
+			}}
+		}
+
 		return notifyMsg{notification: Notification{
 			Kind: NotificationSuccess,
-			Text: fmt.Sprintf("Exported audit to %s", path),
+			Text: fmt.Sprintf("Opened audit workbook %s", path),
 		}}
 	}
 }
@@ -278,7 +285,7 @@ func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
 		case "e":
 			if m.focusPane == paneAudits {
 				if sel := m.selAudit(); sel != nil {
-					return m, m.exportAuditCmd(sel)
+					return m, m.openAuditExcelCmd(sel)
 				}
 			}
 			return m, nil
@@ -800,7 +807,7 @@ func (m AuditsModel) Help() string {
 		}
 		switch m.focusPane {
 		case paneAudits:
-			return "→: Reports  •  ↑/↓: Audit  •  n: URL Audit  •  r: Rerun  •  e: Export Excel  •  d: Delete  •  q: Quit"
+			return "→: Reports  •  ↑/↓: Audit  •  n: URL Audit  •  r: Rerun  •  e: Open Excel  •  d: Delete  •  q: Quit"
 		case paneReports:
 			return "←: Audits  •  →: Issues  •  ↑/↓: Report  •  o: Open in Browser  •  q: Quit"
 		default:
