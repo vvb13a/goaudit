@@ -30,20 +30,14 @@ func main() {
 	defer sqlDB.Close()
 
 	// 3. Engine & Registry
+	// The app-level config acts as the fallback base for audit runs and sizes
+	// the shared link cache. Each audit may carry its own config (stored on
+	// the audit record), which the runner applies per run.
 	linkCache := service.NewLinkCache(cfg.LinkCacheTTL())
 	allChecks := checks.All(linkCache)
 	registry := service.NewCheckRegistry(allChecks...)
 
-	fetcher := service.NewFetcher().
-		WithTimeout(cfg.HTTPTimeout()).
-		WithUserAgent(cfg.UserAgent).
-		WithHeader("X-Audit-Engine", "true")
-
-	runner := service.NewRunner(fetcher, service.RunnerConfig{
-		Concurrency:     cfg.MaxConcurrency,
-		RequestDelay:    cfg.RequestDelay(),
-		MaxSitemapDepth: cfg.MaxSitemapDepth,
-	})
+	runner := service.NewRunner()
 
 	// 4. Application Services (GORM persistence)
 	excelService := service.NewExcelService("data/excel")

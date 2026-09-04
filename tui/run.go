@@ -6,16 +6,21 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/vvb13a/goaudit/domain"
+	"github.com/vvb13a/goaudit/service"
 )
 
 // newRunCmd executes an audit through the runner and persists the resulting
-// audit. Progress events are pushed onto prog; the done channel is closed
-// when the run finishes, so progress waiters can stop.
+// audit. cfg is the effective engine configuration of the run (already
+// resolved from the audit's stored config over the app defaults). Progress
+// events are pushed onto prog; the done channel is closed when the run
+// finishes, so progress waiters can stop.
 func newRunCmd(
 	deps Deps,
 	name string,
+	description string,
 	targets []string,
 	checks []domain.Check,
+	cfg service.Config,
 	target ViewID,
 	prog chan<- ProgressMsg,
 	done chan struct{},
@@ -26,8 +31,10 @@ func newRunCmd(
 		audit, err := deps.Runner.ExecuteAudit(
 			context.Background(),
 			name,
+			description,
 			targets,
 			checks,
+			cfg,
 			func(url string, completed, total int) {
 				prog <- ProgressMsg{CurrentURL: url, Completed: completed, Total: total}
 			},

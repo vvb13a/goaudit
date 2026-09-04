@@ -431,7 +431,8 @@ func (m AuditsModel) submitAuditForm() (AuditsModel, tea.Cmd) {
 		return m, NotifyDanger(fmt.Sprintf("Cannot run audit: %v", err))
 	}
 
-	return m.startAuditRun(name, targets, checks, fmt.Sprintf("Running audit '%s'", name))
+	cfg := effectiveConfig(m.deps, nil)
+	return m.startAuditRun(name, "", targets, checks, cfg, fmt.Sprintf("Running audit '%s'", name))
 }
 
 // startRerun launches a new audit from the configuration stored on an
@@ -439,6 +440,7 @@ func (m AuditsModel) submitAuditForm() (AuditsModel, tea.Cmd) {
 // fall back to the URLs of their previous reports and to all checks.
 func (m AuditsModel) startRerun(a *domain.Audit) (AuditsModel, tea.Cmd) {
 	name := a.Name
+	description := a.Description
 	targets := a.Targets
 	checkNames := a.CheckNames
 
@@ -446,6 +448,9 @@ func (m AuditsModel) startRerun(a *domain.Audit) (AuditsModel, tea.Cmd) {
 		full, err := m.deps.AuditService.GetByID(context.Background(), a.ID)
 		if err != nil {
 			return m, NotifyDanger(fmt.Sprintf("Cannot rerun audit: %v", err))
+		}
+		if description == "" {
+			description = full.Description
 		}
 		if len(targets) == 0 {
 			for _, rep := range full.Reports {
@@ -467,21 +472,34 @@ func (m AuditsModel) startRerun(a *domain.Audit) (AuditsModel, tea.Cmd) {
 		return m, NotifyDanger(fmt.Sprintf("Cannot rerun audit: %v", err))
 	}
 
-	return m.startAuditRun(name, targets, checks, fmt.Sprintf("Rerunning '%s'", name))
+	cfg := effectiveConfig(m.deps, a.Config)
+	return m.startAuditRun(name, description, targets, checks, cfg, fmt.Sprintf("Rerunning '%s'", name))
 }
 
 // startAuditRun launches the run: the audits view switches to its progress
-// state and the runner executes every check against each target.
-func (m AuditsModel) startAuditRun(name string, targets []string, checks []domain.Check, title string) (AuditsModel, tea.Cmd) {
+// state and the runner executes every check against each target using the
+// given effective configuration.
+func (m AuditsModel) startAuditRun(name, description string, targets []string, checks []domain.Check, cfg service.Config, title string) (AuditsModel, tea.Cmd) {
 	m.state = auditsRunningState
 	m.progress = m.progress.Start(title, m.width)
 	m.progressCh = make(chan ProgressMsg, 16)
 	m.progressDone = make(chan struct{})
 
 	return m, tea.Batch(
-		newRunCmd(m.deps, name, targets, checks, AuditsView, m.progressCh, m.progressDone),
+		newRunCmd(m.deps, name, description, targets, checks, cfg, AuditsView, m.progressCh, m.progressDone),
 		newProgressWaitCmd(m.progressCh, m.progressDone),
 	)
+}
+
+// effectiveConfig resolves the engine configuration for an audit run: the
+// app-level config is the fallback base and the audit's stored config JSON
+// (raw, may be nil) is merged over it with per-key validation.
+func effectiveConfig(deps Deps, raw []byte) service.Config {
+	base := *service.DefaultConfig()
+	if deps.ConfigManager != nil {
+		base = deps.ConfigManager.Get()
+	}
+	return service.MergeConfig(base, raw)
 }
 
 func (m AuditsModel) finishRun() AuditsModel {

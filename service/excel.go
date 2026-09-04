@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/xuri/excelize/v2"
@@ -174,6 +175,9 @@ func (s *ExcelService) writeSummary(f *excelize.File, a *domain.Audit, titleStyl
 		{"Duration", a.Duration.Round(time.Millisecond).String()},
 		{"Endpoints audited", fmt.Sprintf("%d", len(a.Reports))},
 		{"Failed endpoints", fmt.Sprintf("%d", a.Summary.FailedCount)},
+	}
+	if strings.TrimSpace(a.Description) != "" {
+		meta = append(meta, [2]string{"Description", a.Description})
 	}
 
 	if err := f.SetCellValue(sheetSummary, "A1", "Audit: "+a.Name); err != nil {

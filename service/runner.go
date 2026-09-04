@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -12,49 +13,44 @@ import (
 
 type ProgressCallback func(currentURL string, completed int, total int)
 
-type RunnerConfig struct {
-	Concurrency     int
-	RequestDelay    time.Duration
-	MaxSitemapDepth int
-}
+// Runner executes audits. It is stateless: each run builds its own fetcher
+// and pacing settings from the effective Config of the audit being run, so
+// every audit can carry its own engine configuration.
+type Runner struct{}
 
-func DefaultRunnerConfig() RunnerConfig {
-	return RunnerConfig{
-		Concurrency:     5,
-		RequestDelay:    0,
-		MaxSitemapDepth: 3,
-	}
-}
-
-type Runner struct {
-	fetcher *Fetcher
-	cfg     RunnerConfig
-}
-
-func NewRunner(fetcher *Fetcher, cfg RunnerConfig) *Runner {
-	if cfg.Concurrency <= 0 {
-		cfg.Concurrency = 5
-	}
-	if cfg.MaxSitemapDepth <= 0 {
-		cfg.MaxSitemapDepth = 3
-	}
-	return &Runner{
-		fetcher: fetcher,
-		cfg:     cfg,
-	}
+func NewRunner() *Runner {
+	return &Runner{}
 }
 
 // ExecuteAudit runs every check against each resolved target and returns the
-// resulting audit. The audit is self-contained: it stores the given name, the
-// targets as entered and the names of the checks that ran.
+// resulting audit. cfg is the effective configuration of the audit (already
+// resolved from the audit record over the app-level defaults). The audit is
+// self-contained: it stores the given name, description, the targets as
+// entered, the names of the checks that ran and the resolved config.
 func (r *Runner) ExecuteAudit(
 	ctx context.Context,
 	name string,
+	description string,
 	targets []string,
 	checks []domain.Check,
+	cfg Config,
 	onProgress ProgressCallback,
 ) (*domain.Audit, error) {
-	resolvedURLs, err := r.ResolveURLs(ctx, targets)
+	concurrency := cfg.MaxConcurrency
+	if concurrency <= 0 {
+		concurrency = 5
+	}
+	maxDepth := cfg.MaxSitemapDepth
+	if maxDepth <= 0 {
+		maxDepth = 3
+	}
+
+	fetcher := NewFetcher().
+		WithTimeout(cfg.HTTPTimeout()).
+		WithUserAgent(cfg.UserAgent).
+		WithHeader("X-Audit-Engine", "true")
+
+	resolvedURLs, err := r.resolveTargets(ctx, fetcher, maxDepth, targets)
 	if err != nil {
 		return nil, fmt.Errorf("resolve targets: %w", err)
 	}
@@ -68,13 +64,20 @@ func (r *Runner) ExecuteAudit(
 		name = "Audit"
 	}
 
+	configRaw, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("encode audit config: %w", err)
+	}
+
 	audit := &domain.Audit{
-		ID:         fmt.Sprintf("aud_%d", time.Now().UnixNano()),
-		Name:       name,
-		Targets:    targets,
-		CheckNames: checkNames(checks),
-		StartedAt:  time.Now().UTC(),
-		Reports:    make([]*domain.Report, total),
+		ID:          fmt.Sprintf("aud_%d", time.Now().UnixNano()),
+		Name:        name,
+		Description: description,
+		Targets:     targets,
+		CheckNames:  checkNames(checks),
+		Config:      configRaw,
+		StartedAt:   time.Now().UTC(),
+		Reports:     make([]*domain.Report, total),
 	}
 
 	if onProgress != nil {
@@ -84,7 +87,8 @@ func (r *Runner) ExecuteAudit(
 	var (
 		wg        sync.WaitGroup
 		completed int64
-		semaphore = make(chan struct{}, r.cfg.Concurrency)
+		semaphore = make(chan struct{}, concurrency)
+		delay     = cfg.RequestDelay()
 	)
 
 	for i, targetURL := range resolvedURLs {
@@ -103,11 +107,11 @@ func (r *Runner) ExecuteAudit(
 				return
 			}
 
-			if r.cfg.RequestDelay > 0 {
-				time.Sleep(r.cfg.RequestDelay)
+			if delay > 0 {
+				time.Sleep(delay)
 			}
 
-			report := r.AuditURL(ctx, u, checks)
+			report := r.auditURL(ctx, fetcher, u, checks)
 			audit.Reports[idx] = report
 
 			currentCompleted := int(atomic.AddInt64(&completed, 1))
@@ -146,12 +150,12 @@ func checkNames(checks []domain.Check) []string {
 	return names
 }
 
-func (r *Runner) AuditURL(ctx context.Context, targetURL string, checks []domain.Check) *domain.Report {
+func (r *Runner) auditURL(ctx context.Context, fetcher *Fetcher, targetURL string, checks []domain.Check) *domain.Report {
 	report := &domain.Report{
 		URL: targetURL,
 	}
 
-	doc, err := r.fetcher.Fetch(ctx, targetURL)
+	doc, err := fetcher.Fetch(ctx, targetURL)
 	if err != nil {
 		report.Issues = []domain.Issue{
 			domain.NewRawIssue(
@@ -183,10 +187,12 @@ func (r *Runner) AuditURL(ctx context.Context, targetURL string, checks []domain
 	return report
 }
 
-func (r *Runner) ResolveURLs(ctx context.Context, rawURLs []string) ([]string, error) {
+// resolveTargets expands the raw target list into concrete URLs, resolving
+// sitemap entries with the given fetcher and depth limit.
+func (r *Runner) resolveTargets(ctx context.Context, fetcher *Fetcher, maxDepth int, rawURLs []string) ([]string, error) {
 	var resolved []string
 	seen := make(map[string]struct{})
-	sitemapParser := NewSitemapParser(r.fetcher, r.cfg.MaxSitemapDepth)
+	sitemapParser := NewSitemapParser(fetcher, maxDepth)
 
 	for _, targetURL := range rawURLs {
 		if IsSitemapURL(targetURL) {

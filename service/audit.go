@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/vvb13a/goaudit/domain"
 	"github.com/vvb13a/goaudit/store"
@@ -63,6 +65,64 @@ func (s *AuditService) GetByID(ctx context.Context, id string) (*domain.Audit, e
 	}
 
 	return audit, nil
+}
+
+// GetConfig returns the stored run configuration of an audit without loading
+// its reports. It is used by the audit editors.
+func (s *AuditService) GetConfig(ctx context.Context, id string) (*domain.Audit, error) {
+	var auditModel store.Audit
+	err := s.db.WithContext(ctx).First(&auditModel, "id = ?", id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, domain.ErrAuditNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get audit config: %w", err)
+	}
+	return auditModel.ToDomain(), nil
+}
+
+// UpdateConfig updates the self-contained run configuration of an existing
+// audit (its name, description, targets, check names and engine config)
+// without touching the stored reports or summary. It updates through the
+// store model so the JSON serializers of the slice columns apply, and selects
+// every column explicitly so empty values (e.g. a cleared description) are
+// persisted too. The config is canonicalized: unknown, partial or wrong
+// entries fall back to the defaults.
+func (s *AuditService) UpdateConfig(ctx context.Context, id, name, description string, targets, checkNames []string, config json.RawMessage) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("audit name is required")
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("audit must contain at least one target URL")
+	}
+	if id == "" {
+		return domain.ErrInvalidAudit
+	}
+
+	canonicalConfig, err := json.Marshal(MergeConfig(*DefaultConfig(), config))
+	if err != nil {
+		return fmt.Errorf("normalize audit config: %w", err)
+	}
+
+	result := s.db.WithContext(ctx).
+		Model(&store.Audit{}).
+		Where("id = ?", id).
+		Select("name", "description", "targets", "check_names", "config").
+		Updates(&store.Audit{
+			ID:          id,
+			Name:        name,
+			Description: description,
+			Targets:     targets,
+			CheckNames:  checkNames,
+			Config:      string(canonicalConfig),
+		})
+	if result.Error != nil {
+		return fmt.Errorf("update audit config: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return domain.ErrAuditNotFound
+	}
+	return nil
 }
 
 func (s *AuditService) List(ctx context.Context, filter domain.AuditFilter) ([]*domain.Audit, error) {

@@ -29,6 +29,8 @@ type ViewID int
 
 const (
 	AuditsView ViewID = iota
+	EditAuditView
+	ChecksView
 	HistoryView
 )
 
@@ -56,6 +58,8 @@ type Model struct {
 	footer        FooterModel
 	notifications NotificationModel
 	audits        AuditsModel
+	auditEdit     AuditEditModel
+	auditChecks   AuditChecksModel
 	history       HistoryModel
 	width         int
 	height        int
@@ -81,8 +85,10 @@ type Model struct {
 	cycleActive bool
 	lastQuietAt time.Time
 
-	auditsSized  bool
-	historySized bool
+	auditsSized      bool
+	auditEditSized   bool
+	auditChecksSized bool
+	historySized     bool
 }
 
 func New(deps Deps) Model {
@@ -90,11 +96,15 @@ func New(deps Deps) Model {
 		deps: deps,
 		nav: NewNavModel([]Tab{
 			{ID: AuditsView, Label: "Audit"},
+			{ID: EditAuditView, Label: "Edit"},
+			{ID: ChecksView, Label: "Checks"},
 			{ID: HistoryView, Label: "History"},
 		}),
 		footer:        NewFooterModel(),
 		notifications: NewNotificationModel(),
 		audits:        NewAuditsModel(deps),
+		auditEdit:     NewAuditEditModel(deps),
+		auditChecks:   NewAuditChecksModel(deps),
 		history:       NewHistoryModel(),
 	}
 }
@@ -113,8 +123,9 @@ func (m Model) contentHeight() int {
 	return h
 }
 
-// activateCmd returns the commands to run when a view is activated: if it
-// has not been sized yet, a replay of the current content dimensions.
+// activateCmd returns the commands to run when a view is activated: a config
+// reload for the audit editors and, if it has not been sized yet, a replay of
+// the current content dimensions.
 func (m Model) activateCmd() tea.Cmd {
 	var cmds []tea.Cmd
 
@@ -122,6 +133,10 @@ func (m Model) activateCmd() tea.Cmd {
 	switch m.nav.Active() {
 	case AuditsView:
 		sized = m.auditsSized
+	case EditAuditView:
+		sized = m.auditEditSized
+	case ChecksView:
+		sized = m.auditChecksSized
 	case HistoryView:
 		sized = m.historySized
 	}
@@ -131,6 +146,15 @@ func (m Model) activateCmd() tea.Cmd {
 		cmds = append(cmds, func() tea.Msg {
 			return viewSizeMsg{width: width, height: height}
 		})
+	}
+
+	if m.tenantID != "" {
+		switch m.nav.Active() {
+		case EditAuditView:
+			cmds = append(cmds, m.auditEdit.loadCmd(m.tenantID))
+		case ChecksView:
+			cmds = append(cmds, m.auditChecks.loadCmd(m.tenantID))
+		}
 	}
 
 	switch len(cmds) {
@@ -147,21 +171,45 @@ func (m Model) markViewSized() {
 	switch m.nav.Active() {
 	case AuditsView:
 		m.auditsSized = true
+	case EditAuditView:
+		m.auditEditSized = true
+	case ChecksView:
+		m.auditChecksSized = true
 	case HistoryView:
 		m.historySized = true
 	}
 }
 
 // viewIsRoot reports whether the active nested view is at its top-level list
-// state, where tab navigation is allowed.
+// state, where tab and number-key navigation is allowed. The audit editors
+// keep navigation out of their forms so keys stay usable for editing.
 func (m Model) viewIsRoot() bool {
 	switch m.nav.Active() {
 	case AuditsView:
 		return m.audits.NavigationEnabled()
+	case EditAuditView:
+		return m.auditEdit.NavigationEnabled()
+	case ChecksView:
+		return m.auditChecks.NavigationEnabled()
 	case HistoryView:
 		return m.history.NavigationEnabled()
 	}
 	return false
+}
+
+// goToView activates the given top-level view, tracking the current tenant in
+// the audit editors and returning their activation commands.
+func (m Model) goToView(id ViewID) (Model, tea.Cmd) {
+	m.nav = m.nav.Select(id)
+	if m.tenantID != "" {
+		switch id {
+		case EditAuditView:
+			m.auditEdit = m.auditEdit.Track(m.tenantID)
+		case ChecksView:
+			m.auditChecks = m.auditChecks.Track(m.tenantID)
+		}
+	}
+	return m, m.activateCmd()
 }
 
 // cycleTailWindow is how long after an event cycle settled that trailing
@@ -234,22 +282,34 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch key.String() {
 		case "tab":
 			if m.viewIsRoot() {
-				m.nav = m.nav.Next()
-				return m, m.activateCmd()
+				next := m.nav.Next()
+				return m.goToView(next.Active())
 			}
 		case "shift+tab", "backtab":
 			if m.viewIsRoot() {
-				m.nav = m.nav.Prev()
-				return m, m.activateCmd()
+				prev := m.nav.Prev()
+				return m.goToView(prev.Active())
+			}
+		case "esc":
+			// The audit editors use Esc as their way back to the audit view
+			// (Tab cycles their fields, so it cannot leave the view).
+			switch m.nav.Active() {
+			case EditAuditView, ChecksView:
+				return m.goToView(AuditsView)
 			}
 		}
 
 		if len(key.Runes) == 1 && key.Runes[0] >= '1' && key.Runes[0] <= '9' {
-			if m.viewIsRoot() {
-				m.nav = m.nav.SelectIndex(int(key.Runes[0]-'0') - 1)
-				return m, m.activateCmd()
+			idx := int(key.Runes[0]-'0') - 1
+			if idx < m.nav.Count() && m.viewIsRoot() {
+				return m.goToView(ViewID(idx))
 			}
 		}
+	}
+
+	// Audit configuration saved by an editor.
+	if cm, ok := msg.(auditConfigSavedMsg); ok {
+		return m.handleAuditConfigSaved(cm)
 	}
 
 	// Tenants of the switcher.
@@ -288,12 +348,40 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.audits, cmd = m.audits.Update(msg)
 		return m, cmd
+	case EditAuditView:
+		var cmd tea.Cmd
+		m.auditEdit, cmd = m.auditEdit.Update(msg)
+		return m, cmd
+	case ChecksView:
+		var cmd tea.Cmd
+		m.auditChecks, cmd = m.auditChecks.Update(msg)
+		return m, cmd
 	case HistoryView:
 		var cmd tea.Cmd
 		m.history, cmd = m.history.Update(msg)
 		return m, cmd
 	}
 	return m, nil
+}
+
+// handleAuditConfigSaved updates the header and tenant list after an editor
+// persisted a configuration change for the current audit.
+func (m Model) handleAuditConfigSaved(msg auditConfigSavedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		return m.pushNotification(Notification{
+			Kind: NotificationDanger,
+			Text: fmt.Sprintf("Save failed: %v", msg.err),
+		}), nil
+	}
+
+	m = m.pushNotification(Notification{
+		Kind: NotificationSuccess,
+		Text: fmt.Sprintf("Audit '%s' updated", msg.name),
+	})
+	if msg.id == m.tenantID {
+		m = m.setTenant(msg.id, msg.name)
+	}
+	return m, m.loadTenantsCmd()
 }
 
 // pushNotification records a notification in the header bar and appends it
@@ -345,6 +433,10 @@ func (m Model) activeViewHelp() string {
 	switch m.nav.Active() {
 	case AuditsView:
 		return m.audits.Help()
+	case EditAuditView:
+		return m.auditEdit.Help()
+	case ChecksView:
+		return m.auditChecks.Help()
 	case HistoryView:
 		return m.history.Help()
 	}
@@ -474,6 +566,10 @@ func (m Model) activeViewContent() string {
 	switch m.nav.Active() {
 	case AuditsView:
 		return m.audits.View()
+	case EditAuditView:
+		return m.auditEdit.View()
+	case ChecksView:
+		return m.auditChecks.View()
 	case HistoryView:
 		return m.history.View()
 	}

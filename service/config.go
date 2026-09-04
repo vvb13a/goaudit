@@ -1,9 +1,11 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -97,4 +99,63 @@ func (c *Config) HTTPTimeout() time.Duration {
 
 func (c *Config) LinkCacheTTL() time.Duration {
 	return time.Duration(c.LinkCacheTTLMin) * time.Minute
+}
+
+// MergeConfig builds the effective engine configuration for an audit run. raw
+// is the JSON config stored on the audit record; base carries the fallback
+// values (typically the app-level config). The stored JSON may be partial,
+// malformed, or contain wrong value types: each recognized key is validated
+// individually and any missing or invalid value falls back to base, so a bad
+// audit config can never produce a broken run.
+func MergeConfig(base Config, raw json.RawMessage) Config {
+	out := base
+
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return out
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(trimmed, &obj); err != nil {
+		return out
+	}
+
+	if v, ok := obj["max_concurrency"]; ok {
+		out.MaxConcurrency = mergeInt(base.MaxConcurrency, v, true)
+	}
+	if v, ok := obj["request_delay_ms"]; ok {
+		out.RequestDelayMs = mergeInt(base.RequestDelayMs, v, false)
+	}
+	if v, ok := obj["http_timeout_sec"]; ok {
+		out.HTTPTimeoutSec = mergeInt(base.HTTPTimeoutSec, v, true)
+	}
+	if v, ok := obj["user_agent"]; ok {
+		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+			out.UserAgent = s
+		}
+	}
+	if v, ok := obj["max_sitemap_depth"]; ok {
+		out.MaxSitemapDepth = mergeInt(base.MaxSitemapDepth, v, true)
+	}
+	if v, ok := obj["link_cache_ttl_min"]; ok {
+		out.LinkCacheTTLMin = mergeInt(base.LinkCacheTTLMin, v, true)
+	}
+	return out
+}
+
+// mergeInt applies a config integer value when it is actually a JSON number
+// within the allowed range; otherwise base is kept.
+func mergeInt(base int, v any, positive bool) int {
+	f, ok := v.(float64)
+	if !ok {
+		return base
+	}
+	n := int(f)
+	if positive && n <= 0 {
+		return base
+	}
+	if !positive && n < 0 {
+		return base
+	}
+	return n
 }

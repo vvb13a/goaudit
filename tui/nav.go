@@ -46,6 +46,11 @@ func (m NavModel) SelectIndex(idx int) NavModel {
 	return m
 }
 
+// Count returns the number of top-level views (tabs).
+func (m NavModel) Count() int {
+	return len(m.tabs)
+}
+
 func (m NavModel) Next() NavModel {
 	if len(m.tabs) > 0 {
 		m.active = (m.active + 1) % len(m.tabs)

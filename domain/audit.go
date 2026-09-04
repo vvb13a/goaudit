@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -51,14 +52,16 @@ func (r *Report) CalculateSummary() {
 // configuration (Name, Targets and CheckNames) inline instead of referencing
 // reusable plans or checklists.
 type Audit struct {
-	ID         string        `json:"id"`
-	Name       string        `json:"name"`
-	Targets    []string      `json:"targets"`
-	CheckNames []string      `json:"check_names"`
-	StartedAt  time.Time     `json:"started_at"`
-	Duration   time.Duration `json:"duration"`
-	Summary    Summary       `json:"summary"`
-	Reports    []*Report     `json:"reports"`
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Targets     []string        `json:"targets"`
+	CheckNames  []string        `json:"check_names"`
+	Config      json.RawMessage `json:"config,omitempty"`
+	StartedAt   time.Time       `json:"started_at"`
+	Duration    time.Duration   `json:"duration"`
+	Summary     Summary         `json:"summary"`
+	Reports     []*Report       `json:"reports"`
 }
 
 func (a *Audit) CalculateSummary() {
