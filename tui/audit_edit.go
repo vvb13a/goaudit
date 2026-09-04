@@ -44,6 +44,7 @@ var cfgFields = []cfgField{
 	{title: "HTTP timeout (s)", positive: true},
 	{title: "Max sitemap depth", positive: true},
 	{title: "Link cache TTL (min)", positive: true},
+	{title: "Min issue severity"},
 	{title: "User agent"},
 }
 
@@ -209,6 +210,7 @@ func (m *AuditEditModel) applyConfig(cfg service.Config) {
 		strconv.Itoa(cfg.HTTPTimeoutSec),
 		strconv.Itoa(cfg.MaxSitemapDepth),
 		strconv.Itoa(cfg.LinkCacheTTLMin),
+		cfg.MinIssueSeverity,
 		cfg.UserAgent,
 	}
 	for i, v := range values {
@@ -258,7 +260,13 @@ func (m AuditEditModel) readConfig() (service.Config, string) {
 		cfg.LinkCacheTTLMin = n
 	}
 
-	ua := strings.TrimSpace(m.cfgInputs[5].Value())
+	minSev, err := domain.ParseSeverity(strings.TrimSpace(m.cfgInputs[5].Value()))
+	if err != nil || minSev.Weight() < domain.SeverityNotice.Weight() {
+		return cfg, cfgFields[5].title + " must be one of notice, warning, error, fatal"
+	}
+	cfg.MinIssueSeverity = string(minSev)
+
+	ua := strings.TrimSpace(m.cfgInputs[6].Value())
 	if ua == "" {
 		return cfg, "User agent must not be empty"
 	}

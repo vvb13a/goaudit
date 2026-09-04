@@ -29,6 +29,7 @@ type ViewID int
 
 const (
 	AuditsView ViewID = iota
+	IssuesView
 	EditAuditView
 	ChecksView
 	HistoryView
@@ -60,6 +61,7 @@ type Model struct {
 	audits        AuditsModel
 	auditEdit     AuditEditModel
 	auditChecks   AuditChecksModel
+	auditIssues   AuditIssuesModel
 	history       HistoryModel
 	width         int
 	height        int
@@ -86,6 +88,7 @@ type Model struct {
 	lastQuietAt time.Time
 
 	auditsSized      bool
+	auditIssuesSized bool
 	auditEditSized   bool
 	auditChecksSized bool
 	historySized     bool
@@ -96,6 +99,7 @@ func New(deps Deps) Model {
 		deps: deps,
 		nav: NewNavModel([]Tab{
 			{ID: AuditsView, Label: "Audit"},
+			{ID: IssuesView, Label: "Issues"},
 			{ID: EditAuditView, Label: "Edit"},
 			{ID: ChecksView, Label: "Checks"},
 			{ID: HistoryView, Label: "History"},
@@ -105,6 +109,7 @@ func New(deps Deps) Model {
 		audits:        NewAuditsModel(deps),
 		auditEdit:     NewAuditEditModel(deps),
 		auditChecks:   NewAuditChecksModel(deps),
+		auditIssues:   NewAuditIssuesModel(deps),
 		history:       NewHistoryModel(),
 	}
 }
@@ -133,6 +138,8 @@ func (m Model) activateCmd() tea.Cmd {
 	switch m.nav.Active() {
 	case AuditsView:
 		sized = m.auditsSized
+	case IssuesView:
+		sized = m.auditIssuesSized
 	case EditAuditView:
 		sized = m.auditEditSized
 	case ChecksView:
@@ -150,6 +157,8 @@ func (m Model) activateCmd() tea.Cmd {
 
 	if m.tenantID != "" {
 		switch m.nav.Active() {
+		case IssuesView:
+			cmds = append(cmds, m.auditIssues.loadCmd(m.tenantID))
 		case EditAuditView:
 			cmds = append(cmds, m.auditEdit.loadCmd(m.tenantID))
 		case ChecksView:
@@ -171,6 +180,8 @@ func (m Model) markViewSized() {
 	switch m.nav.Active() {
 	case AuditsView:
 		m.auditsSized = true
+	case IssuesView:
+		m.auditIssuesSized = true
 	case EditAuditView:
 		m.auditEditSized = true
 	case ChecksView:
@@ -187,6 +198,8 @@ func (m Model) viewIsRoot() bool {
 	switch m.nav.Active() {
 	case AuditsView:
 		return m.audits.NavigationEnabled()
+	case IssuesView:
+		return m.auditIssues.NavigationEnabled()
 	case EditAuditView:
 		return m.auditEdit.NavigationEnabled()
 	case ChecksView:
@@ -203,6 +216,8 @@ func (m Model) goToView(id ViewID) (Model, tea.Cmd) {
 	m.nav = m.nav.Select(id)
 	if m.tenantID != "" {
 		switch id {
+		case IssuesView:
+			m.auditIssues = m.auditIssues.Track(m.tenantID)
 		case EditAuditView:
 			m.auditEdit = m.auditEdit.Track(m.tenantID)
 		case ChecksView:
@@ -348,6 +363,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.audits, cmd = m.audits.Update(msg)
 		return m, cmd
+	case IssuesView:
+		var cmd tea.Cmd
+		m.auditIssues, cmd = m.auditIssues.Update(msg)
+		return m, cmd
 	case EditAuditView:
 		var cmd tea.Cmd
 		m.auditEdit, cmd = m.auditEdit.Update(msg)
@@ -433,6 +452,8 @@ func (m Model) activeViewHelp() string {
 	switch m.nav.Active() {
 	case AuditsView:
 		return m.audits.Help()
+	case IssuesView:
+		return m.auditIssues.Help()
 	case EditAuditView:
 		return m.auditEdit.Help()
 	case ChecksView:
@@ -566,6 +587,8 @@ func (m Model) activeViewContent() string {
 	switch m.nav.Active() {
 	case AuditsView:
 		return m.audits.View()
+	case IssuesView:
+		return m.auditIssues.View()
 	case EditAuditView:
 		return m.auditEdit.View()
 	case ChecksView:

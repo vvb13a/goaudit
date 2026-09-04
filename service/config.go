@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/vvb13a/goaudit/domain"
 )
 
 type Config struct {
@@ -17,16 +19,20 @@ type Config struct {
 	UserAgent       string `json:"user_agent"`
 	MaxSitemapDepth int    `json:"max_sitemap_depth"`
 	LinkCacheTTLMin int    `json:"link_cache_ttl_min"`
+	// MinIssueSeverity is the lowest severity the dedicated issues tab shows
+	// by default (real issues only, so notice and worse).
+	MinIssueSeverity string `json:"min_issue_severity"`
 }
 
 func DefaultConfig() *Config {
 	return &Config{
-		MaxConcurrency:  5,
-		RequestDelayMs:  100,
-		HTTPTimeoutSec:  15,
-		UserAgent:       "GoAuditEngine/1.0 (AuditBot; +https://example.com/bot)",
-		MaxSitemapDepth: 3,
-		LinkCacheTTLMin: 15,
+		MaxConcurrency:   5,
+		RequestDelayMs:   100,
+		HTTPTimeoutSec:   15,
+		UserAgent:        "GoAuditEngine/1.0 (AuditBot; +https://example.com/bot)",
+		MaxSitemapDepth:  3,
+		LinkCacheTTLMin:  15,
+		MinIssueSeverity: string(domain.SeverityNotice),
 	}
 }
 
@@ -140,7 +146,24 @@ func MergeConfig(base Config, raw json.RawMessage) Config {
 	if v, ok := obj["link_cache_ttl_min"]; ok {
 		out.LinkCacheTTLMin = mergeInt(base.LinkCacheTTLMin, v, true)
 	}
+	if v, ok := obj["min_issue_severity"]; ok {
+		out.MinIssueSeverity = mergeSeverity(base.MinIssueSeverity, v)
+	}
 	return out
+}
+
+// mergeSeverity applies a min issue severity when it is a string naming a
+// real issue severity (notice or worse); otherwise base is kept.
+func mergeSeverity(base string, v any) string {
+	s, ok := v.(string)
+	if !ok {
+		return base
+	}
+	sev, err := domain.ParseSeverity(s)
+	if err != nil || sev.Weight() < domain.SeverityNotice.Weight() {
+		return base
+	}
+	return string(sev)
 }
 
 // mergeInt applies a config integer value when it is actually a JSON number
