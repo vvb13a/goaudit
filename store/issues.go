@@ -22,6 +22,7 @@ type Issue struct {
 	Message       string    `gorm:"column:message;type:text;not null"`
 	Evidence      string    `gorm:"column:evidence;type:text;not null;default:'{}'"`
 	PriorSeverity *string   `gorm:"column:prior_severity;type:text"`
+	Lifecycle     string    `gorm:"column:lifecycle;type:text;not null;default:''"`
 	CreatedAt     time.Time `gorm:"column:created_at"`
 	UpdatedAt     time.Time `gorm:"column:updated_at"`
 }
@@ -37,9 +38,14 @@ func IssueID(auditID, url, checkName string) string {
 }
 
 // IssueModel converts a check result into a row for the given audit and url.
-// prior optionally carries the previous severity (nil on first creation) and
-// at stamps the row timestamps.
-func IssueModel(auditID, url string, iss *domain.Issue, prior *string, at time.Time) *Issue {
+// The row metadata (PriorSeverity, Lifecycle, timestamps) is read from the
+// domain issue, where the persistence layer stamps it before mapping; at is
+// the run timestamp used for new rows and updated_at.
+func IssueModel(auditID, url string, iss *domain.Issue, at time.Time) *Issue {
+	created := iss.CreatedAt
+	if created.IsZero() {
+		created = at
+	}
 	return &Issue{
 		ID:            IssueID(auditID, url, iss.CheckName),
 		AuditID:       auditID,
@@ -49,10 +55,20 @@ func IssueModel(auditID, url string, iss *domain.Issue, prior *string, at time.T
 		Severity:      string(iss.Severity),
 		Message:       iss.Message,
 		Evidence:      detailsJSON(iss.Details),
-		PriorSeverity: prior,
-		CreatedAt:     at,
+		PriorSeverity: optionalSeverity(iss.PriorSeverity),
+		Lifecycle:     string(iss.Lifecycle),
+		CreatedAt:     created,
 		UpdatedAt:     at,
 	}
+}
+
+// optionalSeverity converts a severity into a nullable column value.
+func optionalSeverity(s domain.Severity) *string {
+	if s == "" {
+		return nil
+	}
+	v := string(s)
+	return &v
 }
 
 func (m *Issue) ToDomain() *domain.Issue {
@@ -64,6 +80,7 @@ func (m *Issue) ToDomain() *domain.Issue {
 		Severity:  domain.Severity(m.Severity),
 		Passed:    !domain.Severity(m.Severity).IsFailure(),
 		Message:   m.Message,
+		Lifecycle: domain.IssueLifecycle(m.Lifecycle),
 		CreatedAt: m.CreatedAt,
 		UpdatedAt: m.UpdatedAt,
 	}

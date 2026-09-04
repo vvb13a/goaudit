@@ -432,7 +432,7 @@ func (m AuditsModel) submitAuditForm() (AuditsModel, tea.Cmd) {
 	}
 
 	cfg := effectiveConfig(m.deps, nil)
-	return m.startAuditRun(name, "", targets, checks, cfg, fmt.Sprintf("Running audit '%s'", name))
+	return m.startAuditRun(name, "", targets, checks, cfg, "", fmt.Sprintf("Running audit '%s'", name))
 }
 
 // startRerun launches a new audit from the configuration stored on an
@@ -473,20 +473,21 @@ func (m AuditsModel) startRerun(a *domain.Audit) (AuditsModel, tea.Cmd) {
 	}
 
 	cfg := effectiveConfig(m.deps, a.Config)
-	return m.startAuditRun(name, description, targets, checks, cfg, fmt.Sprintf("Rerunning '%s'", name))
+	return m.startAuditRun(name, description, targets, checks, cfg, a.ID, fmt.Sprintf("Rerunning '%s'", name))
 }
 
 // startAuditRun launches the run: the audits view switches to its progress
 // state and the runner executes every check against each target using the
-// given effective configuration.
-func (m AuditsModel) startAuditRun(name, description string, targets []string, checks []domain.Check, cfg service.Config, title string) (AuditsModel, tea.Cmd) {
+// given effective configuration. replaceID carries the audit id to rerun in
+// place ("" starts a brand-new audit).
+func (m AuditsModel) startAuditRun(name, description string, targets []string, checks []domain.Check, cfg service.Config, replaceID, title string) (AuditsModel, tea.Cmd) {
 	m.state = auditsRunningState
 	m.progress = m.progress.Start(title, m.width)
 	m.progressCh = make(chan ProgressMsg, 16)
 	m.progressDone = make(chan struct{})
 
 	return m, tea.Batch(
-		newRunCmd(m.deps, name, description, targets, checks, cfg, AuditsView, m.progressCh, m.progressDone),
+		newRunCmd(m.deps, name, description, targets, checks, cfg, replaceID, AuditsView, m.progressCh, m.progressDone),
 		newProgressWaitCmd(m.progressCh, m.progressDone),
 	)
 }

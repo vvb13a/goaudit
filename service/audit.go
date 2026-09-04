@@ -41,7 +41,10 @@ func (s *AuditService) Create(ctx context.Context, a *domain.Audit) error {
 				continue
 			}
 			seen[id] = struct{}{}
-			issueModels = append(issueModels, store.IssueModel(a.ID, url, issue, nil, now))
+			// First observation of the combination: no prior state, "new".
+			issue.PriorSeverity = ""
+			issue.Lifecycle = domain.LifecycleNew
+			issueModels = append(issueModels, store.IssueModel(a.ID, url, issue, now))
 		}
 	}
 
@@ -61,6 +64,100 @@ func (s *AuditService) Create(ctx context.Context, a *domain.Audit) error {
 		}
 		return nil
 	})
+}
+
+// ReplaceRun persists a rerun of an existing audit without creating a new
+// audit record: the report and issue rows of the audit are replaced by the
+// fresh results and every issue keeps its identity (audit, url, check). The
+// stored severity moves to prior_severity and the fresh severity becomes the
+// current one, with the lifecycle derived from the transition. When an issue
+// already carries a prior_severity and its severity did not change, both
+// columns are left untouched.
+func (s *AuditService) ReplaceRun(ctx context.Context, a *domain.Audit) error {
+	now := time.Now().UTC()
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Capture the previous issue state before replacing the rows.
+		var previous []store.Issue
+		if err := tx.Where("audit_id = ?", a.ID).Find(&previous).Error; err != nil {
+			return fmt.Errorf("load previous issues: %w", err)
+		}
+		oldByID := make(map[string]store.Issue, len(previous))
+		for _, row := range previous {
+			oldByID[row.ID] = row
+		}
+
+		if err := tx.Where("audit_id = ?", a.ID).Delete(&store.Report{}).Error; err != nil {
+			return fmt.Errorf("replace reports: %w", err)
+		}
+		if err := tx.Where("audit_id = ?", a.ID).Delete(&store.Issue{}).Error; err != nil {
+			return fmt.Errorf("replace issues: %w", err)
+		}
+		if err := tx.Save(store.AuditModel(a)).Error; err != nil {
+			return fmt.Errorf("update audit: %w", err)
+		}
+
+		reportModels := make([]*store.Report, 0, len(a.Reports))
+		issueModels := make([]*store.Issue, 0)
+		seen := make(map[string]struct{})
+
+		for i, r := range a.Reports {
+			reportModels = append(reportModels, store.ReportModel(a.ID, fmt.Sprintf("%s_r_%d", a.ID, i+1), r))
+			for j := range r.Issues {
+				issue := &r.Issues[j]
+				url := issueURL(r)
+				id := store.IssueID(a.ID, url, issue.CheckName)
+				if _, dup := seen[id]; dup {
+					continue
+				}
+				seen[id] = struct{}{}
+				if oldRow, ok := oldByID[id]; ok {
+					applyIssueTransition(&oldRow, issue, now)
+				} else {
+					issue.PriorSeverity = ""
+					issue.Lifecycle = domain.LifecycleNew
+				}
+				issueModels = append(issueModels, store.IssueModel(a.ID, url, issue, now))
+			}
+		}
+
+		if len(reportModels) > 0 {
+			if err := tx.Create(reportModels).Error; err != nil {
+				return fmt.Errorf("insert reports: %w", err)
+			}
+		}
+		if len(issueModels) > 0 {
+			if err := tx.Create(issueModels).Error; err != nil {
+				return fmt.Errorf("insert issues: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+// applyIssueTransition rotates the stored severity into prior_severity and
+// stamps the lifecycle of the change. Caveat: when the previous row already
+// carries a prior_severity and the fresh severity equals the stored severity,
+// neither column is updated, so an earlier transition (e.g. degraded) is not
+// overwritten by an unchanged rerun. The row creation timestamp is preserved.
+func applyIssueTransition(previous *store.Issue, issue *domain.Issue, now time.Time) {
+	oldSeverity := domain.Severity(previous.Severity)
+	newSeverity := issue.Severity
+
+	if previous.CreatedAt.IsZero() {
+		issue.CreatedAt = now
+	} else {
+		issue.CreatedAt = previous.CreatedAt
+	}
+
+	if previous.PriorSeverity != nil && newSeverity == oldSeverity {
+		issue.Severity = oldSeverity
+		issue.PriorSeverity = domain.Severity(*previous.PriorSeverity)
+	} else {
+		issue.PriorSeverity = oldSeverity
+	}
+
+	issue.Lifecycle = domain.ComputeLifecycle(issue.PriorSeverity, issue.PriorSeverity != "", issue.Severity)
 }
 
 // issueURL returns the identity URL of an issue: the final URL of its report

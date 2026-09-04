@@ -11,9 +11,11 @@ import (
 
 // newRunCmd executes an audit through the runner and persists the resulting
 // audit. cfg is the effective engine configuration of the run (already
-// resolved from the audit's stored config over the app defaults). Progress
-// events are pushed onto prog; the done channel is closed when the run
-// finishes, so progress waiters can stop.
+// resolved from the audit's stored config over the app defaults). When
+// replaceID is non-empty the run is a rerun: the results replace the issue
+// and report rows of that existing audit instead of creating a new one.
+// Progress events are pushed onto prog; the done channel is closed when the
+// run finishes, so progress waiters can stop.
 func newRunCmd(
 	deps Deps,
 	name string,
@@ -21,6 +23,7 @@ func newRunCmd(
 	targets []string,
 	checks []domain.Check,
 	cfg service.Config,
+	replaceID string,
 	target ViewID,
 	prog chan<- ProgressMsg,
 	done chan struct{},
@@ -42,7 +45,14 @@ func newRunCmd(
 		if err != nil {
 			return runCompleteMsg{target: target, title: name, err: err}
 		}
-		if err := deps.AuditService.Create(context.Background(), audit); err != nil {
+
+		if replaceID != "" {
+			audit.ID = replaceID
+			err = deps.AuditService.ReplaceRun(context.Background(), audit)
+		} else {
+			err = deps.AuditService.Create(context.Background(), audit)
+		}
+		if err != nil {
 			return runCompleteMsg{target: target, audit: audit, title: name, err: err}
 		}
 		return runCompleteMsg{target: target, audit: audit, title: name}
