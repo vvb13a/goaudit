@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/vvb13a/goaudit/domain"
 	"github.com/vvb13a/goaudit/store"
@@ -24,8 +25,24 @@ func NewAuditService(db *gorm.DB, excel *ExcelService, html *HtmlService) *Audit
 
 func (s *AuditService) Create(ctx context.Context, a *domain.Audit) error {
 	reportModels := make([]*store.Report, 0, len(a.Reports))
+	issueModels := make([]*store.Issue, 0)
+	now := time.Now().UTC()
+	seen := make(map[string]struct{})
+
 	for i, r := range a.Reports {
 		reportModels = append(reportModels, store.ReportModel(a.ID, fmt.Sprintf("%s_r_%d", a.ID, i+1), r))
+		for j := range r.Issues {
+			issue := &r.Issues[j]
+			url := issueURL(r)
+			id := store.IssueID(a.ID, url, issue.CheckName)
+			if _, dup := seen[id]; dup {
+				// Same page reached through two targets: the issue row is
+				// stored once and re-attached to every matching report.
+				continue
+			}
+			seen[id] = struct{}{}
+			issueModels = append(issueModels, store.IssueModel(a.ID, url, issue, nil, now))
+		}
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -37,8 +54,22 @@ func (s *AuditService) Create(ctx context.Context, a *domain.Audit) error {
 				return fmt.Errorf("insert reports: %w", err)
 			}
 		}
+		if len(issueModels) > 0 {
+			if err := tx.Create(issueModels).Error; err != nil {
+				return fmt.Errorf("insert issues: %w", err)
+			}
+		}
 		return nil
 	})
+}
+
+// issueURL returns the identity URL of an issue: the final URL of its report
+// when known, otherwise the audited URL (e.g. on fetch failures).
+func issueURL(r *domain.Report) string {
+	if r.FinalURL != "" {
+		return r.FinalURL
+	}
+	return r.URL
 }
 
 func (s *AuditService) GetByID(ctx context.Context, id string) (*domain.Audit, error) {
@@ -59,9 +90,32 @@ func (s *AuditService) GetByID(ctx context.Context, id string) (*domain.Audit, e
 		return nil, fmt.Errorf("list reports for audit: %w", err)
 	}
 
+	var issueModels []store.Issue
+	err = s.db.WithContext(ctx).Order("rowid").Where("audit_id = ?", id).Find(&issueModels).Error
+	if err != nil {
+		return nil, fmt.Errorf("list issues for audit: %w", err)
+	}
+
 	audit.Reports = make([]*domain.Report, 0, len(reportModels))
 	for i := range reportModels {
 		audit.Reports = append(audit.Reports, reportModels[i].ToDomain())
+	}
+
+	// Re-attach issues to their reports and recompute the per-URL summaries
+	// from the stored rows. Rows are addressed by final URL; when several
+	// targets resolve to the same page (same final URL), the single stored
+	// row is attached to every matching report because the page was checked
+	// identically for each of them.
+	for i := range issueModels {
+		issue := issueModels[i].ToDomain()
+		for _, rep := range audit.Reports {
+			if issueURL(rep) == issue.URL {
+				rep.Issues = append(rep.Issues, *issue)
+			}
+		}
+	}
+	for _, rep := range audit.Reports {
+		rep.CalculateSummary()
 	}
 
 	return audit, nil
@@ -170,6 +224,9 @@ func (s *AuditService) Delete(ctx context.Context, id string) error {
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("audit_id = ?", id).Delete(&store.Report{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("audit_id = ?", id).Delete(&store.Issue{}).Error; err != nil {
 			return err
 		}
 		return tx.Delete(&store.Audit{}, "id = ?", id).Error
