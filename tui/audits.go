@@ -19,13 +19,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-type auditsLoadedMsg struct {
-	audits []*domain.Audit
-	err    error
-}
-
 // auditsDetailMsg carries the fully hydrated audit (reports with issues) for
-// the middle and right panes. id guards against stale responses.
+// the reports and issues panes. id guards against stale responses.
 type auditsDetailMsg struct {
 	id    string
 	audit *domain.Audit
@@ -36,15 +31,15 @@ type auditsState int
 
 const (
 	auditsListState auditsState = iota
-	auditsDeleteState
 	auditsRunningState
 	auditsFormState
 )
 
-// Panes of the split audits view.
+// Focused panes of the tenant view. The audit (tenant) itself is chosen by
+// the root-level tenant switcher, so only its reports and issues panes are
+// shown here.
 const (
-	paneAudits = iota
-	paneReports
+	paneReports = iota
 	paneIssues
 )
 
@@ -65,22 +60,18 @@ type auditForm struct {
 	cursor  int // index into options while checks are focused
 }
 
+// AuditsModel renders the reports (URLs) and issues of the current tenant
+// audit, and hosts the run form and progress of new audits.
 type AuditsModel struct {
 	deps         Deps
 	state        auditsState
-	audits       []*domain.Audit
-	table        table.Model
 	form         auditForm
 	progress     ProgressModel
 	progressCh   chan ProgressMsg
 	progressDone chan struct{}
-	loaded       bool
-	deleteID     string
-	deleteName   string
 	width        int
 	height       int
 
-	// Split audits/reports/issues view.
 	focusPane     int
 	detailID      string
 	detailLoading bool
@@ -100,32 +91,22 @@ func NewAuditsModel(deps Deps) AuditsModel {
 	return AuditsModel{
 		deps:         deps,
 		state:        auditsListState,
-		table:        table.New(),
 		reportsTable: table.New(),
 		issuesTable:  table.New(),
 		progress:     NewProgressModel(),
 	}
 }
 
-func (m AuditsModel) Init() tea.Cmd {
-	return m.loadCmd()
-}
-
-func (m AuditsModel) Loaded() bool {
-	return m.loaded
-}
-
 func (m AuditsModel) NavigationEnabled() bool {
 	return m.state == auditsListState
 }
 
-func (m AuditsModel) loadCmd() tea.Cmd {
-	return func() tea.Msg {
-		audits, err := m.deps.AuditService.List(context.Background(), domain.AuditFilter{})
-		return auditsLoadedMsg{audits: audits, err: err}
-	}
+// Running reports whether an audit run is currently in progress.
+func (m AuditsModel) Running() bool {
+	return m.state == auditsRunningState
 }
 
+// loadDetailCmd fetches the full audit for the given id.
 func (m AuditsModel) loadDetailCmd(id string) tea.Cmd {
 	return func() tea.Msg {
 		audit, err := m.deps.AuditService.GetByID(context.Background(), id)
@@ -136,123 +117,14 @@ func (m AuditsModel) loadDetailCmd(id string) tea.Cmd {
 	}
 }
 
-// openAuditExcelCmd hydrates the full audit (reports with issues), renders
-// it into an Excel workbook (reusing an existing one instead of
-// regenerating) and opens the workbook with the default xlsx viewer.
-func (m AuditsModel) openAuditExcelCmd(a *domain.Audit) tea.Cmd {
-	return func() tea.Msg {
-		if m.deps.ExcelService == nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: "Excel export is not available",
-			}}
-		}
-
-		full, err := m.deps.AuditService.GetByID(context.Background(), a.ID)
-		if err != nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: fmt.Sprintf("Export failed: %v", err),
-			}}
-		}
-
-		path, err := m.deps.ExcelService.ExportAudit(full)
-		if err != nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: fmt.Sprintf("Export failed: %v", err),
-			}}
-		}
-
-		if err := openWithDefaultApp(path); err != nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: fmt.Sprintf("Failed to open '%s': %v", path, err),
-			}}
-		}
-
-		return notifyMsg{notification: Notification{
-			Kind: NotificationSuccess,
-			Text: fmt.Sprintf("Opened audit workbook %s", path),
-		}}
-	}
-}
-
-// openAuditHTMLCmd hydrates the full audit (reports with issues), renders
-// it into an HTML report (reusing an existing one instead of regenerating)
-// and opens the report in the default browser.
-func (m AuditsModel) openAuditHTMLCmd(a *domain.Audit) tea.Cmd {
-	return func() tea.Msg {
-		if m.deps.HtmlService == nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: "HTML report is not available",
-			}}
-		}
-
-		full, err := m.deps.AuditService.GetByID(context.Background(), a.ID)
-		if err != nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: fmt.Sprintf("Export failed: %v", err),
-			}}
-		}
-
-		path, err := m.deps.HtmlService.ExportAudit(full)
-		if err != nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: fmt.Sprintf("Export failed: %v", err),
-			}}
-		}
-
-		if err := openWithDefaultApp(path); err != nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: fmt.Sprintf("Failed to open '%s': %v", path, err),
-			}}
-		}
-
-		return notifyMsg{notification: Notification{
-			Kind: NotificationSuccess,
-			Text: fmt.Sprintf("Opened audit report %s", path),
-		}}
-	}
-}
-
 func (m AuditsModel) Update(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.rebuildAuditsTable()
 		m.rebuildReportsTable()
 		m.rebuildIssuesTable()
 		return m, nil
-
-	case auditsLoadedMsg:
-		m.loaded = true
-		if msg.err != nil {
-			return m, NotifyDanger(fmt.Sprintf("Failed to load audits: %v", msg.err))
-		}
-		m.audits = msg.audits
-		sort.SliceStable(m.audits, func(i, j int) bool {
-			return m.audits[i].StartedAt.After(m.audits[j].StartedAt)
-		})
-		m.rebuildAuditsTable()
-
-		if len(m.audits) == 0 {
-			return m.closeDetail(), nil
-		}
-
-		// Keep showing the selected audit if it still exists, otherwise fall
-		// back to the first audit of the refreshed history.
-		for _, a := range m.audits {
-			if a.ID == m.detailID {
-				return m, nil
-			}
-		}
-		return m.openDetail(m.audits[0].ID, paneAudits)
 
 	case auditsDetailMsg:
 		if msg.id != m.detailID {
@@ -289,20 +161,16 @@ func (m AuditsModel) Update(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	switch m.state {
 	case auditsListState:
 		return m.updateSplit(msg)
-	case auditsDeleteState:
-		return m.updateDelete(msg)
 	case auditsFormState:
 		return m.updateForm(msg)
 	}
 	return m, nil
 }
 
-// ---- Split view handling ----
+// ---- Tenant detail handling ----
 
-// updateSplit routes keys to the focused pane. Left/right move the focus
-// across the audits, reports and issues panes; the panes stay in sync with
-// the selected audit/report. Audit-level actions (new audit, rerun, delete,
-// export) are available while the audits pane is focused.
+// updateSplit routes keys to the focused pane: reports (URLs) on the left
+// and issues on the right.
 func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	if m.issueDetailOpen {
 		if key, ok := msg.(tea.KeyMsg); ok && key.String() == "esc" {
@@ -316,53 +184,14 @@ func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
 		switch msg.String() {
 		case "q":
 			return m, tea.Quit
-		case "n":
-			if m.focusPane == paneAudits {
-				m.form = newAuditForm(m.deps.Registry)
-				m.state = auditsFormState
-			}
-			return m, nil
-		case "r":
-			if m.focusPane == paneAudits {
-				if sel := m.selAudit(); sel != nil {
-					return m.startRerun(sel)
-				}
-			}
-			return m, nil
-		case "d", "x":
-			if m.focusPane == paneAudits {
-				if sel := m.selAudit(); sel != nil {
-					m.deleteID = sel.ID
-					m.deleteName = sel.Name
-					m.state = auditsDeleteState
-				}
-			}
-			return m, nil
-		case "e":
-			if m.focusPane == paneAudits {
-				if sel := m.selAudit(); sel != nil {
-					return m, m.openAuditExcelCmd(sel)
-				}
-			}
-			return m, nil
-		case "w":
-			if m.focusPane == paneAudits {
-				if sel := m.selAudit(); sel != nil {
-					return m, m.openAuditHTMLCmd(sel)
-				}
-			}
-			return m, nil
 		case "left", "h":
-			if m.focusPane > paneAudits {
+			if m.focusPane > paneReports {
 				m.focusPane--
 			}
 			return m, nil
 		case "right", "l":
 			if m.focusPane < paneIssues {
 				m.focusPane++
-				if m.focusPane == paneReports && m.detailAudit != nil {
-					m.rebuildReportsTable()
-				}
 			}
 			return m, nil
 		}
@@ -370,15 +199,6 @@ func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
 
 	var cmd tea.Cmd
 	switch m.focusPane {
-	case paneAudits:
-		before := m.table.Cursor()
-		m.table, cmd = m.table.Update(msg)
-		if sel := m.selAudit(); sel != nil && m.table.Cursor() != before {
-			if sel.ID != m.detailID {
-				return m.openDetail(sel.ID, paneAudits)
-			}
-		}
-
 	case paneReports:
 		if key, ok := msg.(tea.KeyMsg); ok && key.String() == "o" {
 			if rep := m.currentReport(); rep != nil && rep.URL != "" {
@@ -411,17 +231,18 @@ func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	return m, cmd
 }
 
-// openDetail switches the detail panes to the given audit, loading it when
-// it is not the audit currently shown.
-func (m AuditsModel) openDetail(id string, focusPane int) (AuditsModel, tea.Cmd) {
+// openDetail shows the given audit (tenant) as the current detail, loading it
+// from the store when it is not already loaded.
+func (m AuditsModel) openDetail(id string) (AuditsModel, tea.Cmd) {
+	m.state = auditsListState
+	m.issueDetailOpen = false
 	if id != m.detailID {
 		m.detailID = id
 		m.detailLoading = true
 		m.detailAudit = nil
 		m.reportIdx = 0
 	}
-	m.focusPane = focusPane
-	m.rebuildAuditsTable()
+	m.focusPane = paneReports
 	m.rebuildReportsTable()
 	m.rebuildIssuesTable()
 	if m.detailLoading {
@@ -430,8 +251,23 @@ func (m AuditsModel) openDetail(id string, focusPane int) (AuditsModel, tea.Cmd)
 	return m, nil
 }
 
-// closeDetail drops the audit shown in the detail panes.
-func (m AuditsModel) closeDetail() AuditsModel {
+// showTenant fills the panes with an already fully hydrated audit, without a
+// round trip to the store. Used right after a run completes.
+func (m AuditsModel) showTenant(a *domain.Audit) AuditsModel {
+	m.state = auditsListState
+	m.issueDetailOpen = false
+	m.detailID = a.ID
+	m.detailLoading = false
+	m.detailAudit = a
+	m.reportIdx = 0
+	m.focusPane = paneReports
+	m.rebuildReportsTable()
+	m.rebuildIssuesTable()
+	return m
+}
+
+// clearTenant drops the audit currently shown in the panes.
+func (m AuditsModel) clearTenant() AuditsModel {
 	m.detailID = ""
 	m.detailLoading = false
 	m.detailAudit = nil
@@ -443,12 +279,11 @@ func (m AuditsModel) closeDetail() AuditsModel {
 	return m
 }
 
-func (m AuditsModel) selAudit() *domain.Audit {
-	idx := m.table.Cursor()
-	if idx < 0 || idx >= len(m.audits) {
-		return nil
-	}
-	return m.audits[idx]
+// beginNewAudit opens the run form so a new audit can be configured.
+func (m AuditsModel) beginNewAudit() AuditsModel {
+	m.form = newAuditForm(m.deps.Registry)
+	m.state = auditsFormState
+	return m
 }
 
 func (m AuditsModel) currentReport() *domain.Report {
@@ -458,7 +293,7 @@ func (m AuditsModel) currentReport() *domain.Report {
 	return m.detailAudit.Reports[m.reportIdx]
 }
 
-// ---- Other states ----
+// ---- Run form and execution ----
 
 // newAuditForm builds the run form with every registered check preselected.
 func newAuditForm(registry *service.CheckRegistry) auditForm {
@@ -651,46 +486,12 @@ func (m AuditsModel) startAuditRun(name string, targets []string, checks []domai
 
 func (m AuditsModel) finishRun() AuditsModel {
 	m.state = auditsListState
-	m.closeDetail()
 	m.progressCh = nil
 	m.progressDone = nil
 	return m
 }
 
-func (m AuditsModel) markStale() AuditsModel {
-	m.loaded = false
-	return m
-}
-
-func (m AuditsModel) updateDelete(msg tea.Msg) (AuditsModel, tea.Cmd) {
-	key, ok := msg.(tea.KeyMsg)
-	if !ok {
-		return m, nil
-	}
-
-	switch key.String() {
-	case "y", "Y":
-		var notice tea.Cmd
-		if err := m.deps.AuditService.Delete(context.Background(), m.deleteID); err != nil {
-			notice = NotifyDanger(fmt.Sprintf("Delete failed: %v", err))
-		} else {
-			notice = NotifySuccess(fmt.Sprintf("Deleted audit '%s'", m.deleteName))
-		}
-		m.state = auditsListState
-		return m, tea.Batch(m.loadCmd(), notice)
-	default:
-		m.deleteID = ""
-		m.deleteName = ""
-		m.state = auditsListState
-		return m, nil
-	}
-}
-
 // ---- Rendering ----
-
-func (m AuditsModel) contentView() string {
-	return m.splitView()
-}
 
 func (m AuditsModel) View() string {
 	switch m.state {
@@ -700,8 +501,6 @@ func (m AuditsModel) View() string {
 			return overlay(content, m.issueDetailView(), m.width, m.height)
 		}
 		return content
-	case auditsDeleteState:
-		return overlay(m.contentView(), m.deleteView(), m.width, m.height)
 	case auditsRunningState:
 		return m.progress.View()
 	case auditsFormState:
@@ -710,44 +509,35 @@ func (m AuditsModel) View() string {
 	return ""
 }
 
-func (m AuditsModel) listView() string {
-	if !m.loaded {
-		return "Loading audits..."
+func (m AuditsModel) contentView() string {
+	if m.detailLoading {
+		return m.splitView()
 	}
-	if len(m.audits) == 0 {
-		return "No audits yet. Press 'n' to run a new audit."
+	if m.detailAudit == nil {
+		return m.emptyTenantView()
 	}
-	return m.table.View()
+	return m.splitView()
 }
 
-// splitView renders three equal panes: audits, reports of the selected audit
-// and the issues of the selected report, with a severity summary line on top.
+// splitView renders the two tenant panes side by side: URLs (reports) on the
+// left and the issues of the selected report on the right, with a severity
+// summary line on top.
 func (m AuditsModel) splitView() string {
-	paneW := m.width / 3
+	paneW := m.width / 2
 	if paneW < 20 || m.height < 5 {
-		return m.listView()
+		return "Terminal too small for the audit view."
 	}
 
 	boxH := m.height - 1
 	innerW := paneW - 2
 
-	leftContent := m.table.View()
-	if !m.loaded {
-		leftContent = "Loading audits..."
-	} else if len(m.audits) == 0 {
-		leftContent = "No audits yet. Press 'n' to run a new audit."
-	}
-
-	left := m.paneView(leftContent, innerW, boxH-2)
-	middle := m.paneView(m.middlePaneView(), innerW, boxH-2)
+	left := m.paneView(m.leftPaneView(), innerW, boxH-2)
 	right := m.paneView(m.rightPaneView(), innerW, boxH-2)
 
-	leftBox := paneBox(left, paneW, boxH, m.focusPane == paneAudits)
-	middleBox := paneBox(middle, paneW, boxH, m.focusPane == paneReports)
+	leftBox := paneBox(left, paneW, boxH, m.focusPane == paneReports)
 	rightBox := paneBox(right, paneW, boxH, m.focusPane == paneIssues)
 
 	leftLines := strings.Split(leftBox, "\n")
-	middleLines := strings.Split(middleBox, "\n")
 	rightLines := strings.Split(rightBox, "\n")
 
 	var b strings.Builder
@@ -755,11 +545,59 @@ func (m AuditsModel) splitView() string {
 	b.WriteString("\n")
 	for i := 0; i < boxH; i++ {
 		b.WriteString(leftLines[i])
-		b.WriteString(middleLines[i])
 		b.WriteString(rightLines[i])
 		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// emptyTenantView is shown when no audit (tenant) is selected yet.
+func (m AuditsModel) emptyTenantView() string {
+	var b strings.Builder
+	b.WriteString(helpStyle.Render("No audit selected."))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("Press Ctrl+O to open the audit switcher — Enter picks an audit, 'n' starts a new one."))
+	return centerLines(b.String(), m.width)
+}
+
+// centerLines horizontally centers each line within the given width.
+func centerLines(content string, width int) string {
+	var b strings.Builder
+	for _, line := range strings.Split(content, "\n") {
+		pad := width - lipgloss.Width(line)
+		if pad < 0 {
+			pad = 0
+		}
+		b.WriteString(strings.Repeat(" ", pad/2))
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (m AuditsModel) leftPaneView() string {
+	if m.detailLoading {
+		return "Loading reports..."
+	}
+	if m.detailAudit == nil {
+		return ""
+	}
+	if len(m.detailAudit.Reports) == 0 {
+		return "No reports."
+	}
+	return m.reportsTable.View()
+}
+
+func (m AuditsModel) rightPaneView() string {
+	if m.detailLoading || m.detailAudit == nil {
+		return ""
+	}
+	if rep := m.currentReport(); rep == nil {
+		return "Select a URL on the left to inspect its issues."
+	} else if len(rep.Issues) == 0 {
+		return "No issues."
+	}
+	return m.issuesTable.View()
 }
 
 // paneView fills pane content (already sized by the tables) out to exactly
@@ -889,31 +727,6 @@ func issueSeverityColor(severity domain.Severity) lipgloss.Color {
 	}
 }
 
-func (m AuditsModel) middlePaneView() string {
-	if m.detailLoading {
-		return "Loading reports..."
-	}
-	if m.detailAudit == nil {
-		return "No audit selected."
-	}
-	if len(m.detailAudit.Reports) == 0 {
-		return "No reports."
-	}
-	return m.reportsTable.View()
-}
-
-func (m AuditsModel) rightPaneView() string {
-	if m.detailLoading || m.detailAudit == nil {
-		return ""
-	}
-	if rep := m.currentReport(); rep == nil {
-		return ""
-	} else if len(rep.Issues) == 0 {
-		return "No issues."
-	}
-	return m.issuesTable.View()
-}
-
 // issueDetailView renders the full details of the selected issue, including
 // the evidence map as formatted JSON.
 func (m AuditsModel) issueDetailView() string {
@@ -966,10 +779,6 @@ func wrapText(s string, width int) string {
 	return strings.TrimRight(out.String(), "\n")
 }
 
-func (m AuditsModel) deleteView() string {
-	return fmt.Sprintf("Delete audit '%s'? This cannot be undone.", m.deleteName)
-}
-
 // formView renders the fields of the new-audit run form: a name, one target
 // URL per line and the checks to run.
 func (m AuditsModel) formView() string {
@@ -1012,102 +821,27 @@ func (m AuditsModel) formView() string {
 
 func (m AuditsModel) Help() string {
 	switch m.state {
-	case auditsDeleteState:
-		return "y: Delete  •  any other key: Cancel"
 	case auditsRunningState:
 		return "Audit in progress  •  Ctrl+C: Quit"
 	case auditsFormState:
 		return "Tab: Switch  •  Space: Toggle  •  Ctrl+S: Run  •  Esc: Cancel"
-	case auditsListState:
+	default:
 		if m.issueDetailOpen {
 			return "Esc: Close Details  •  q: Quit"
 		}
 		switch m.focusPane {
-		case paneAudits:
-			return "→: Reports  •  ↑/↓: Audit  •  n: New Audit  •  r: Rerun  •  e: Excel  •  w: HTML  •  d: Delete  •  q: Quit"
 		case paneReports:
-			return "←: Audits  •  →: Issues  •  ↑/↓: Report  •  o: Open in Browser  •  q: Quit"
+			return "→: Issues  •  ↑/↓: URL  •  o: Open in Browser  •  Ctrl+O: Audits  •  q: Quit"
 		default:
-			return "←: Reports  •  ↑/↓: Issue  •  Enter: Details  •  q: Quit"
+			return "←: URLs  •  ↑/↓: Issue  •  Enter: Details  •  Ctrl+O: Audits  •  q: Quit"
 		}
 	}
-	return ""
 }
 
 // ---- Tables ----
 
-func (m *AuditsModel) rebuildAuditsTable() {
-	cursor := m.table.Cursor()
-	tableWidth := m.width/3 - 2
-	if tableWidth < 10 {
-		tableWidth = 10
-	}
-
-	// Column widths never shrink below the length of their header label so
-	// titles are never clipped. The name column absorbs the spare width.
-	sevW := 8 // "Severity"
-	durW := 8 // "Duration"
-	startedW := 14
-	nameW := tableWidth - sevW - durW - startedW
-	if nameW < 8 {
-		// Not enough room: fall back to compact relative times ("3h ago").
-		startedW = 8
-		nameW = tableWidth - sevW - durW - startedW
-		if nameW < 8 {
-			// Still tight: drop the duration column entirely.
-			durW = 0
-			nameW = tableWidth - sevW - startedW
-			if nameW < 8 {
-				nameW = 8
-				startedW = tableWidth - sevW - nameW
-				if startedW < 5 {
-					startedW = 5
-				}
-			}
-		}
-	}
-
-	short := startedW < 14
-	columns := []table.Column{
-		{Title: "Name", Width: nameW},
-		{Title: "Started", Width: startedW},
-	}
-	if durW > 0 {
-		columns = append(columns, table.Column{Title: "Duration", Width: durW})
-	}
-	columns = append(columns, table.Column{Title: "Severity", Width: sevW})
-
-	rows := make([]table.Row, 0, len(m.audits))
-	for _, a := range m.audits {
-		row := table.Row{clipCell(a.Name, nameW-1), timeAgo(a.StartedAt, short)}
-		if durW > 0 {
-			row = append(row, a.Duration.Round(time.Second).String())
-		}
-		row = append(row, string(a.Summary.HighestSeverity))
-		rows = append(rows, row)
-	}
-
-	height := m.regionHeight()
-
-	t := table.New(
-		table.WithColumns(columns),
-		table.WithRows(rows),
-		table.WithFocused(true),
-		table.WithHeight(height),
-	)
-	t.SetStyles(tableStyle())
-	t.SetWidth(tableWidth)
-	if len(rows) > 0 {
-		if cursor >= len(rows) {
-			cursor = len(rows) - 1
-		}
-		t.SetCursor(cursor)
-	}
-	m.table = t
-}
-
 func (m *AuditsModel) rebuildReportsTable() {
-	paneW := m.width/3 - 2
+	paneW := m.width/2 - 2
 	if m.detailAudit == nil {
 		m.reportsTable = table.New()
 		return
@@ -1149,7 +883,7 @@ func (m *AuditsModel) rebuildReportsTable() {
 }
 
 func (m *AuditsModel) rebuildIssuesTable() {
-	paneW := m.width/3 - 2
+	paneW := m.width/2 - 2
 	rep := m.currentReport()
 	if rep == nil {
 		m.issuesTable = table.New()
@@ -1270,4 +1004,90 @@ func ago(d, unit time.Duration, fullUnit, shortUnit string, short bool) string {
 		label += "s"
 	}
 	return fmt.Sprintf("%d %s ago", n, label)
+}
+
+// ---- Exports (used by the tenant switcher) ----
+
+// exportExcelCmd hydrates the full audit (reports with issues), renders it
+// into an Excel workbook (reusing an existing one instead of regenerating)
+// and opens the workbook with the default xlsx viewer.
+func exportExcelCmd(deps Deps, a *domain.Audit) tea.Cmd {
+	return func() tea.Msg {
+		if deps.ExcelService == nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: "Excel export is not available",
+			}}
+		}
+
+		full, err := deps.AuditService.GetByID(context.Background(), a.ID)
+		if err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Export failed: %v", err),
+			}}
+		}
+
+		path, err := deps.ExcelService.ExportAudit(full)
+		if err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Export failed: %v", err),
+			}}
+		}
+
+		if err := openWithDefaultApp(path); err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Failed to open '%s': %v", path, err),
+			}}
+		}
+
+		return notifyMsg{notification: Notification{
+			Kind: NotificationSuccess,
+			Text: fmt.Sprintf("Opened audit workbook %s", path),
+		}}
+	}
+}
+
+// exportHTMLCmd hydrates the full audit (reports with issues), renders it
+// into an HTML report (reusing an existing one instead of regenerating) and
+// opens the report in the default browser.
+func exportHTMLCmd(deps Deps, a *domain.Audit) tea.Cmd {
+	return func() tea.Msg {
+		if deps.HtmlService == nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: "HTML report is not available",
+			}}
+		}
+
+		full, err := deps.AuditService.GetByID(context.Background(), a.ID)
+		if err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Export failed: %v", err),
+			}}
+		}
+
+		path, err := deps.HtmlService.ExportAudit(full)
+		if err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Export failed: %v", err),
+			}}
+		}
+
+		if err := openWithDefaultApp(path); err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Failed to open '%s': %v", path, err),
+			}}
+		}
+
+		return notifyMsg{notification: Notification{
+			Kind: NotificationSuccess,
+			Text: fmt.Sprintf("Opened audit report %s", path),
+		}}
+	}
 }

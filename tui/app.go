@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/vvb13a/goaudit/domain"
 	"github.com/vvb13a/goaudit/service"
 )
 
@@ -59,6 +60,19 @@ type Model struct {
 	width         int
 	height        int
 
+	// Tenant state: the audit is the tenant. tenants holds the audit list
+	// for the switcher overlay, and tenantID/tenantName describe the audit
+	// currently shown in the header and the audit view.
+	tenants      []*domain.Audit
+	tenantID     string
+	tenantName   string
+	tenantPicked bool
+
+	// Tenant switcher overlay state.
+	switcherOpen    bool
+	switcherCursor  int
+	switcherConfirm *domain.Audit
+
 	// Event cycle timing for the footer metrics: eventStart marks the
 	// beginning of the current (or most recent) user event, cycleActive
 	// stays true while background commands spawned by it are still running,
@@ -75,7 +89,7 @@ func New(deps Deps) Model {
 	return Model{
 		deps: deps,
 		nav: NewNavModel([]Tab{
-			{ID: AuditsView, Label: "Audits"},
+			{ID: AuditsView, Label: "Audit"},
 			{ID: HistoryView, Label: "History"},
 		}),
 		footer:        NewFooterModel(),
@@ -85,22 +99,8 @@ func New(deps Deps) Model {
 	}
 }
 
-// initCmdForActiveView kicks off the initial data load for the active view,
-// so a view only loads once it is first shown.
-func (m Model) initCmdForActiveView() tea.Cmd {
-	switch m.nav.Active() {
-	case AuditsView:
-		if !m.audits.Loaded() {
-			return m.audits.Init()
-		}
-	case HistoryView:
-		// The session history has no data to load.
-	}
-	return nil
-}
-
 func (m Model) Init() tea.Cmd {
-	return m.initCmdForActiveView()
+	return m.loadTenantsCmd()
 }
 
 // contentHeight returns the number of lines available to the active nested
@@ -113,15 +113,10 @@ func (m Model) contentHeight() int {
 	return h
 }
 
-// activateCmd returns the commands to run when a view is activated: its
-// initial data load (once) and, if it has not been sized yet, a replay of the
-// current content dimensions.
+// activateCmd returns the commands to run when a view is activated: if it
+// has not been sized yet, a replay of the current content dimensions.
 func (m Model) activateCmd() tea.Cmd {
 	var cmds []tea.Cmd
-
-	if c := m.initCmdForActiveView(); c != nil {
-		cmds = append(cmds, c)
-	}
 
 	sized := false
 	switch m.nav.Active() {
@@ -217,10 +212,26 @@ func isExternalEvent(msg tea.Msg) bool {
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if msg, ok := msg.(tea.KeyMsg); ok {
-		switch msg.String() {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
 		case "ctrl+c":
 			return m, tea.Quit
+		case "ctrl+o":
+			if m.switcherOpen {
+				return m.closeSwitcher(), nil
+			}
+			if !m.audits.Running() {
+				return m.openSwitcher(), nil
+			}
+			return m, nil
+		}
+
+		// While the tenant switcher overlay is open, keys are consumed by it.
+		if m.switcherOpen {
+			return m.handleSwitcherKey(key)
+		}
+
+		switch key.String() {
 		case "tab":
 			if m.viewIsRoot() {
 				m.nav = m.nav.Next()
@@ -233,12 +244,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		if len(msg.Runes) == 1 && msg.Runes[0] >= '1' && msg.Runes[0] <= '9' {
+		if len(key.Runes) == 1 && key.Runes[0] >= '1' && key.Runes[0] <= '9' {
 			if m.viewIsRoot() {
-				m.nav = m.nav.SelectIndex(int(msg.Runes[0]-'0') - 1)
+				m.nav = m.nav.SelectIndex(int(key.Runes[0]-'0') - 1)
 				return m, m.activateCmd()
 			}
 		}
+	}
+
+	// Tenants of the switcher.
+	if tm, ok := msg.(tenantsLoadedMsg); ok {
+		return m.handleTenantsLoaded(tm)
+	}
+	if tm, ok := msg.(tenantDeletedMsg); ok {
+		return m.handleTenantDeleted(tm)
 	}
 
 	// Global notifications.
@@ -286,7 +305,10 @@ func (m Model) pushNotification(n Notification) Model {
 	return m
 }
 
+// handleRunComplete promotes the finished audit to the current tenant,
+// refreshes the switcher list and navigates to the audit view.
 func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
+	m = m.closeSwitcher()
 	m.audits = m.audits.finishRun()
 
 	var notification Notification
@@ -294,6 +316,8 @@ func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
 	case msg.err != nil:
 		notification = Notification{Kind: NotificationDanger, Text: fmt.Sprintf("Audit failed: %v", msg.err)}
 	case msg.audit != nil:
+		m = m.setTenant(msg.audit.ID, msg.audit.Name)
+		m.audits = m.audits.showTenant(msg.audit)
 		notification = Notification{
 			Kind: NotificationSuccess,
 			Text: fmt.Sprintf("Audit '%s' finished: %d endpoints in %v",
@@ -304,9 +328,17 @@ func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
 	}
 	m = m.pushNotification(notification)
 
-	m.audits = m.audits.markStale()
 	m.nav = m.nav.Select(msg.target)
-	return m, m.activateCmd()
+	return m, tea.Batch(m.loadTenantsCmd(), m.activateCmd())
+}
+
+// helpText picks the footer help: the switcher help while its overlay is
+// open, otherwise the active view's help.
+func (m Model) helpText() string {
+	if m.switcherOpen {
+		return m.switcherHelp()
+	}
+	return m.activeViewHelp()
 }
 
 func (m Model) activeViewHelp() string {
@@ -328,8 +360,9 @@ func (m Model) chromeSpaces(n int) string {
 	return chromeSpaceStyle.Render(strings.Repeat(" ", n))
 }
 
-// headerLine renders the header bar: navigation pills on the left and any
-// active notification on the right, stretched edge to edge.
+// headerLine renders the header bar: navigation pills on the left, the
+// current tenant and any active notification on the right, stretched edge to
+// edge.
 func (m Model) headerLine() string {
 	pills := m.nav.Pills()
 	if m.width <= 0 {
@@ -344,19 +377,35 @@ func (m Model) headerLine() string {
 	}
 	leftW += pillGap
 
+	// The tenant pill is reserved room on the right hand side; the
+	// notification sits next to it when there is space left.
+	tenantBudget := m.width - leftW - chromePadding*3
+	if tenantBudget > 8 {
+		tenantBudget -= 8
+	} else {
+		tenantBudget = 0
+	}
+	tenant := m.tenantPill(tenantBudget)
+	tenantW := lipgloss.Width(tenant)
+
 	notification := ""
 	if m.notifications.IsActive() {
-		budget := m.width - leftW - chromePadding*3
+		budget := m.width - leftW - tenantW - chromePadding*3
 		if budget > 10 {
 			notification = m.notifications.View(budget)
 		}
 	}
 	notifW := lipgloss.Width(notification)
 
-	fill := m.width - leftW - notifW - chromePadding
-	if notification != "" {
-		fill--
+	fill := m.width - leftW - tenantW - notifW - chromePadding
+	gaps := 0
+	if tenant != "" {
+		gaps++
 	}
+	if notification != "" {
+		gaps++
+	}
+	fill -= gaps
 	if fill < 0 {
 		fill = 0
 	}
@@ -370,12 +419,34 @@ func (m Model) headerLine() string {
 		b.WriteString(pill)
 	}
 	b.WriteString(m.chromeSpaces(fill))
+	if tenant != "" {
+		b.WriteString(m.chromeSpaces(1))
+		b.WriteString(tenant)
+	}
 	if notification != "" {
 		b.WriteString(m.chromeSpaces(1))
 		b.WriteString(notification)
 	}
 	b.WriteString(m.chromeSpaces(chromePadding))
 	return b.String()
+}
+
+// tenantPill renders the current tenant (audit) for the header bar, clipped
+// to the given budget. An empty pill is returned when there is no room.
+func (m Model) tenantPill(budget int) string {
+	if budget < 12 {
+		return ""
+	}
+	name := m.tenantName
+	if name == "" {
+		name = "none"
+	}
+	maxName := budget - lipgloss.Width(tenantLabel)
+	if maxName < 1 {
+		maxName = 1
+	}
+	name = clipCell(name, maxName)
+	return tenantLabel + tenantNameStyle.Render(name)
 }
 
 func (m Model) View() string {
@@ -385,12 +456,16 @@ func (m Model) View() string {
 	b.WriteString("\n")
 
 	content := fillLines(m.activeViewContent(), m.contentHeight())
-	b.WriteString(strings.Join(content, "\n"))
+	view := strings.Join(content, "\n")
+	if m.switcherOpen {
+		view = overlay(view, m.switcherView(), m.width, m.contentHeight())
+	}
+	b.WriteString(view)
 
 	b.WriteString("\n")
 
 	right := metricsText(m.eventTotal())
-	b.WriteString(m.footer.WithContent(m.activeViewHelp(), right).View())
+	b.WriteString(m.footer.WithContent(m.helpText(), right).View())
 
 	return b.String()
 }

@@ -11,6 +11,14 @@ var (
 	labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	helpStyle  = lipgloss.NewStyle().Faint(true)
 
+	// tenantLabel prefixes the current tenant in the header bar.
+	tenantLabel = helpStyle.Render("Audit: ")
+
+	// tenantNameStyle renders the tenant (audit) name in the header bar.
+	tenantNameStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#7aa2f7"))
+
 	pillActiveStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#FFFFFF")).
