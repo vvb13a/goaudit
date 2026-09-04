@@ -34,7 +34,7 @@ func (c *DocumentSizeCheck) Supports(doc *domain.Document) bool {
 	return true
 }
 
-func (c *DocumentSizeCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
+func (c *DocumentSizeCheck) Apply(ctx context.Context, doc *domain.Document) domain.Issue {
 	actualSizeBytes := len(doc.Body)
 	actualSizeKb := math.Round((float64(actualSizeBytes)/1024.0)*100) / 100
 
@@ -43,57 +43,49 @@ func (c *DocumentSizeCheck) Apply(ctx context.Context, doc *domain.Document) []d
 	noticeThresholdBytes := c.NoticeThresholdKb * 1024
 
 	if actualSizeBytes > errorThresholdBytes {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				domain.SeverityError,
-				fmt.Sprintf("Uncompressed response size (%.2f KB) is critically large, exceeding the error threshold of %d KB.", actualSizeKb, c.ErrorThresholdKb),
-				map[string]any{
-					"issue_type":   "critical_size",
-					"size_kb":      actualSizeKb,
-					"threshold_kb": c.ErrorThresholdKb,
-				},
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			domain.SeverityError,
+			fmt.Sprintf("Uncompressed response size (%.2f KB) is critically large, exceeding the error threshold of %d KB.", actualSizeKb, c.ErrorThresholdKb),
+			map[string]any{
+				"issue_type":   "critical_size",
+				"size_kb":      actualSizeKb,
+				"threshold_kb": c.ErrorThresholdKb,
+			},
+		)
 	}
 
 	if actualSizeBytes > warningThresholdBytes {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				domain.SeverityWarning,
-				fmt.Sprintf("Uncompressed response size (%.2f KB) is large, exceeding the warning threshold of %d KB.", actualSizeKb, c.WarningThresholdKb),
-				map[string]any{
-					"issue_type":   "large_size",
-					"size_kb":      actualSizeKb,
-					"threshold_kb": c.WarningThresholdKb,
-				},
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			domain.SeverityWarning,
+			fmt.Sprintf("Uncompressed response size (%.2f KB) is large, exceeding the warning threshold of %d KB.", actualSizeKb, c.WarningThresholdKb),
+			map[string]any{
+				"issue_type":   "large_size",
+				"size_kb":      actualSizeKb,
+				"threshold_kb": c.WarningThresholdKb,
+			},
+		)
 	}
 
 	if actualSizeBytes > noticeThresholdBytes {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				domain.SeverityNotice,
-				fmt.Sprintf("Uncompressed response size (%.2f KB) is large, exceeding the notice threshold of %d KB.", actualSizeKb, c.NoticeThresholdKb),
-				map[string]any{
-					"issue_type":   "large_size",
-					"size_kb":      actualSizeKb,
-					"threshold_kb": c.NoticeThresholdKb,
-				},
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			domain.SeverityNotice,
+			fmt.Sprintf("Uncompressed response size (%.2f KB) is large, exceeding the notice threshold of %d KB.", actualSizeKb, c.NoticeThresholdKb),
+			map[string]any{
+				"issue_type":   "large_size",
+				"size_kb":      actualSizeKb,
+				"threshold_kb": c.NoticeThresholdKb,
+			},
+		)
 	}
 
-	return []domain.Issue{
-		domain.NewPassIssueWithDetails(
-			c,
-			fmt.Sprintf("Uncompressed response size (%.2f KB) is within acceptable limits.", actualSizeKb),
-			map[string]any{
-				"size_kb": actualSizeKb,
-			},
-		),
-	}
+	return domain.NewPassIssueWithDetails(
+		c,
+		fmt.Sprintf("Uncompressed response size (%.2f KB) is within acceptable limits.", actualSizeKb),
+		map[string]any{
+			"size_kb": actualSizeKb,
+		},
+	)
 }

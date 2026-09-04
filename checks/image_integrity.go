@@ -41,86 +41,91 @@ func (c *ImageIntegrityCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *ImageIntegrityCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
+func (c *ImageIntegrityCheck) Apply(ctx context.Context, doc *domain.Document) domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				domain.SeverityError,
-				fmt.Sprintf("Error processing images: %s", err.Error()),
-				nil,
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			domain.SeverityError,
+			fmt.Sprintf("Error processing images: %s", err.Error()),
+			nil,
+		)
 	}
 
 	images := c.findImages(root)
 
 	if len(images) == 0 {
-		return []domain.Issue{
-			domain.NewPassIssue(
-				c,
-				"No images found on the page to check.",
-			),
-		}
+		return domain.NewPassIssue(
+			c,
+			"No images found on the page to check.",
+		)
 	}
 
-	var detectedIssues []domain.Issue
+	builder := domain.NewIssueBuilder()
 
 	for _, img := range images {
 		src, hasSrc := c.getAttribute(img, "src")
 		src = strings.TrimSpace(src)
 
 		if !hasSrc || src == "" {
-			detectedIssues = append(detectedIssues, domain.NewFailIssue(
-				c,
-				c.EmptyMissingSrcSeverity,
-				"Image tag is missing the \"src\" attribute or it is empty.",
-				map[string]any{
-					"issue_type": "missing_src",
-				},
-			))
+			builder.Add(domain.Finding{
+				Type:     "missing_src",
+				Severity: c.EmptyMissingSrcSeverity,
+				Message:  "Image tag is missing the \"src\" attribute or it is empty.",
+			})
 			continue
 		}
 
 		altText, hasAlt := c.getAttribute(img, "alt")
 		if !hasAlt {
-			detectedIssues = append(detectedIssues, domain.NewFailIssue(
-				c,
-				c.MissingAltSeverity,
-				"Image is missing the alt attribute.",
-				map[string]any{
-					"issue_type": "missing_alt",
-					"image_src":  src,
+			builder.Add(domain.Finding{
+				Type:     "missing_alt",
+				Severity: c.MissingAltSeverity,
+				Message:  "Image is missing the alt attribute.",
+				Data: map[string]any{
+					"image_src": src,
 				},
-			))
+			})
 			continue
 		}
 
 		altText = strings.TrimSpace(altText)
 		if c.FlagEmptyAlt && altText == "" {
-			detectedIssues = append(detectedIssues, domain.NewFailIssue(
-				c,
-				c.EmptyAltSeverity,
-				"Image has an empty alt attribute (alt=\"\"). This may be intentional for decorative images.",
-				map[string]any{
-					"issue_type": "empty_alt",
-					"image_src":  src,
+			builder.Add(domain.Finding{
+				Type:     "empty_alt",
+				Severity: c.EmptyAltSeverity,
+				Message:  "Image has an empty alt attribute (alt=\"\"). This may be intentional for decorative images.",
+				Data: map[string]any{
+					"image_src": src,
 				},
-			))
+			})
 		}
 	}
 
-	if len(detectedIssues) > 0 {
-		return detectedIssues
+	if builder.HasFindings() {
+		return domain.NewFailIssue(c, builder.Severity(), c.summary(builder), builder.Details())
 	}
 
-	return []domain.Issue{
-		domain.NewPassIssue(
-			c,
-			"All images have valid src and appropriate alt attributes.",
-		),
+	return domain.NewPassIssue(
+		c,
+		"All images have valid src and appropriate alt attributes.",
+	)
+}
+
+// summary renders a short message for the aggregated issue from the kinds of
+// findings collected.
+func (c *ImageIntegrityCheck) summary(builder *domain.IssueBuilder) string {
+	var parts []string
+	if count := builder.CountByType("missing_src"); count > 0 {
+		parts = append(parts, fmt.Sprintf("%d image(s) are missing a src attribute", count))
 	}
+	if count := builder.CountByType("missing_alt"); count > 0 {
+		parts = append(parts, fmt.Sprintf("%d image(s) are missing an alt attribute", count))
+	}
+	if count := builder.CountByType("empty_alt"); count > 0 {
+		parts = append(parts, fmt.Sprintf("%d image(s) have an empty alt attribute", count))
+	}
+	return strings.Join(parts, "; ") + "."
 }
 
 func (c *ImageIntegrityCheck) findImages(root *html.Node) []*html.Node {

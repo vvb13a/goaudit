@@ -39,44 +39,38 @@ type headingNodeInfo struct {
 	node  *html.Node
 }
 
-func (c *HeadingHierarchyCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
+func (c *HeadingHierarchyCheck) Apply(ctx context.Context, doc *domain.Document) domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				domain.SeverityError,
-				fmt.Sprintf("Error during heading hierarchy check: %s", err.Error()),
-				nil,
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			domain.SeverityError,
+			fmt.Sprintf("Error during heading hierarchy check: %s", err.Error()),
+			nil,
+		)
 	}
 
 	headings := c.collectHeadings(root)
 
 	if len(headings) == 0 {
-		return []domain.Issue{
-			domain.NewPassIssue(
-				c,
-				"No headings present to check.",
-			),
-		}
+		return domain.NewPassIssue(
+			c,
+			"No headings present to check.",
+		)
 	}
 
 	firstHeading := headings[0]
 	if firstHeading.tag != "h1" {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				c.Severity,
-				fmt.Sprintf("Heading hierarchy error: The first heading on the page should be an <h1> but found a <%s>.", firstHeading.tag),
-				map[string]any{
-					"issue_type":   "incorrect_first_heading",
-					"found_tag":    firstHeading.tag,
-					"expected_tag": "h1",
-				},
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			c.Severity,
+			fmt.Sprintf("Heading hierarchy error: The first heading on the page should be an <h1> but found a <%s>.", firstHeading.tag),
+			map[string]any{
+				"issue_type":   "incorrect_first_heading",
+				"found_tag":    firstHeading.tag,
+				"expected_tag": "h1",
+			},
+		)
 	}
 
 	lastLevel := 1
@@ -88,30 +82,26 @@ func (c *HeadingHierarchyCheck) Apply(ctx context.Context, doc *domain.Document)
 			violatingTag := fmt.Sprintf("h%d", currentLevel)
 			previousTag := fmt.Sprintf("h%d", lastLevel)
 
-			return []domain.Issue{
-				domain.NewFailIssue(
-					c,
-					c.Severity,
-					fmt.Sprintf("Heading hierarchy error: A <%s> was found following a <%s>, skipping a level.", violatingTag, previousTag),
-					map[string]any{
-						"issue_type":     "skipped_level",
-						"violating_tag":  violatingTag,
-						"violating_text": strings.TrimSpace(c.extractText(currentHeading.node)),
-						"previous_tag":   previousTag,
-					},
-				),
-			}
+			return domain.NewFailIssue(
+				c,
+				c.Severity,
+				fmt.Sprintf("Heading hierarchy error: A <%s> was found following a <%s>, skipping a level.", violatingTag, previousTag),
+				map[string]any{
+					"issue_type":     "skipped_level",
+					"violating_tag":  violatingTag,
+					"violating_text": strings.TrimSpace(c.extractText(currentHeading.node)),
+					"previous_tag":   previousTag,
+				},
+			)
 		}
 
 		lastLevel = currentLevel
 	}
 
-	return []domain.Issue{
-		domain.NewPassIssue(
-			c,
-			"Heading hierarchy is valid.",
-		),
-	}
+	return domain.NewPassIssue(
+		c,
+		"Heading hierarchy is valid.",
+	)
 }
 
 func (c *HeadingHierarchyCheck) collectHeadings(root *html.Node) []headingNodeInfo {

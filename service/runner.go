@@ -160,8 +160,8 @@ func (r *Runner) AuditURL(ctx context.Context, targetURL string, checks []domain
 			continue
 		}
 
-		issues := check.Apply(ctx, doc)
-		report.Issues = append(report.Issues, issues...)
+		issue := check.Apply(ctx, doc)
+		report.Issues = append(report.Issues, issue)
 	}
 
 	report.CalculateSummary()

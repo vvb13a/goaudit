@@ -11,7 +11,7 @@ type CheckInfo struct {
 type Check interface {
 	Info() CheckInfo
 	Supports(doc *Document) bool
-	Apply(ctx context.Context, doc *Document) []Issue
+	Apply(ctx context.Context, doc *Document) Issue
 }
 
 func NewPassIssue(check Check, message string) Issue {

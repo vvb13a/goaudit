@@ -36,70 +36,60 @@ func (c *SchemaCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *SchemaCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
+func (c *SchemaCheck) Apply(ctx context.Context, doc *domain.Document) domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				domain.SeverityError,
-				fmt.Sprintf("Error during Schema.org check: %s", err.Error()),
-				nil,
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			domain.SeverityError,
+			fmt.Sprintf("Error during Schema.org check: %s", err.Error()),
+			nil,
+		)
 	}
 
 	schemaScripts := c.findJSONLDScripts(root)
 
 	if len(schemaScripts) == 0 {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				c.MissingSeverity,
-				"No Schema.org script tag (script[type=\"application/ld+json\"]) was found on the page.",
-				map[string]any{
-					"issue_type": "missing",
-				},
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			c.MissingSeverity,
+			"No Schema.org script tag (script[type=\"application/ld+json\"]) was found on the page.",
+			map[string]any{
+				"issue_type": "missing",
+			},
+		)
 	}
 
 	jsonContent := strings.TrimSpace(schemaScripts[0])
 
 	if jsonContent == "" {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				c.InvalidJSONSeverity,
-				"A Schema.org script tag was found, but its content is empty.",
-				map[string]any{
-					"issue_type": "empty_content",
-				},
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			c.InvalidJSONSeverity,
+			"A Schema.org script tag was found, but its content is empty.",
+			map[string]any{
+				"issue_type": "empty_content",
+			},
+		)
 	}
 
 	var rawJSON any
 	if err := json.Unmarshal([]byte(jsonContent), &rawJSON); err != nil {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				c.InvalidJSONSeverity,
-				"The content of the Schema.org script tag is not valid JSON.",
-				map[string]any{
-					"issue_type": "invalid_json",
-					"error":      err.Error(),
-				},
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			c.InvalidJSONSeverity,
+			"The content of the Schema.org script tag is not valid JSON.",
+			map[string]any{
+				"issue_type": "invalid_json",
+				"error":      err.Error(),
+			},
+		)
 	}
 
-	return []domain.Issue{
-		domain.NewPassIssue(
-			c,
-			"Schema (JSON-LD) is present and contains valid JSON.",
-		),
-	}
+	return domain.NewPassIssue(
+		c,
+		"Schema (JSON-LD) is present and contains valid JSON.",
+	)
 }
 
 func (c *SchemaCheck) findJSONLDScripts(root *html.Node) []string {

@@ -46,76 +46,85 @@ func (c *TitleCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *TitleCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
-	var detectedIssues []domain.Issue
-
+func (c *TitleCheck) Apply(ctx context.Context, doc *domain.Document) domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				domain.SeverityError,
-				fmt.Sprintf("Error during title check: %s", err.Error()),
-				nil,
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			domain.SeverityError,
+			fmt.Sprintf("Error during title check: %s", err.Error()),
+			nil,
+		)
 	}
 
 	titleNodes := c.findTitleNodes(root)
 	titleNodeCount := len(titleNodes)
 
 	if titleNodeCount == 0 {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				c.MissingEmptySeverity,
-				"Missing <title> tag.",
-				map[string]any{
-					"issue_type": "missing",
-				},
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			c.MissingEmptySeverity,
+			"Missing <title> tag.",
+			map[string]any{
+				"issue_type": "missing",
+			},
+		)
 	}
 
+	builder := domain.NewIssueBuilder()
+
 	if titleNodeCount > 1 {
-		detectedIssues = append(detectedIssues, domain.NewFailIssue(
-			c,
-			c.MultipleSeverity,
-			"Multiple <title> tags found.",
-			map[string]any{
-				"issue_type": "multiple",
-				"count":      titleNodeCount,
+		builder.Add(domain.Finding{
+			Type:     "multiple",
+			Severity: c.MultipleSeverity,
+			Message:  "Multiple <title> tags found.",
+			Data: map[string]any{
+				"count": titleNodeCount,
 			},
-		))
+		})
 	}
 
 	titleContent := strings.TrimSpace(c.extractText(titleNodes[0]))
 	if titleContent == "" {
-		detectedIssues = append(detectedIssues, domain.NewFailIssue(
-			c,
-			c.MissingEmptySeverity,
-			"<title> tag is empty or contains only whitespace.",
-			map[string]any{
-				"issue_type": "empty",
-			},
-		))
+		builder.Add(domain.Finding{
+			Type:     "empty",
+			Severity: c.MissingEmptySeverity,
+			Message:  "<title> tag is empty or contains only whitespace.",
+		})
 	} else {
-		c.checkLength(&detectedIssues, titleContent)
+		c.checkLength(builder, titleContent)
 	}
 
-	if len(detectedIssues) > 0 {
-		return detectedIssues
+	if builder.HasFindings() {
+		return domain.NewFailIssue(c, builder.Severity(), c.summary(builder), builder.Details())
 	}
 
-	return []domain.Issue{
-		domain.NewPassIssue(
-			c,
-			"Title is present and has appropriate length.",
-		),
-	}
+	return domain.NewPassIssue(
+		c,
+		"Title is present and has appropriate length.",
+	)
 }
 
-func (c *TitleCheck) checkLength(detectedIssues *[]domain.Issue, titleContent string) {
+// summary renders a short message for the aggregated issue from the kinds of
+// findings collected.
+func (c *TitleCheck) summary(builder *domain.IssueBuilder) string {
+	var parts []string
+	if builder.CountByType("multiple") > 0 {
+		parts = append(parts, "Multiple <title> tags found.")
+	}
+	if builder.CountByType("empty") > 0 {
+		parts = append(parts, "The <title> tag is empty or contains only whitespace.")
+	}
+	if builder.CountByType("length_max") > 0 {
+		parts = append(parts, "The <title> is longer than the recommended maximum.")
+	}
+	if builder.CountByType("length_min") > 0 {
+		parts = append(parts, "The <title> is shorter than the recommended minimum.")
+	}
+	return strings.Join(parts, " ")
+}
+
+func (c *TitleCheck) checkLength(builder *domain.IssueBuilder, titleContent string) {
 	titleLength := utf8.RuneCountInString(titleContent)
 
 	if c.MaxTitleLength != nil && titleLength > *c.MaxTitleLength {
@@ -128,34 +137,32 @@ func (c *TitleCheck) checkLength(detectedIssues *[]domain.Issue, titleContent st
 
 		message := fmt.Sprintf("Title length (%d) exceeds the ideal maximum of %d by %d characters.", titleLength, *c.MaxTitleLength, overage)
 
-		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
-			c,
-			level,
-			message,
-			map[string]any{
-				"issue_type": "length_max",
-				"title":      titleContent,
-				"length":     titleLength,
-				"limit":      *c.MaxTitleLength,
-				"overage":    overage,
+		builder.Add(domain.Finding{
+			Type:     "length_max",
+			Severity: level,
+			Message:  message,
+			Data: map[string]any{
+				"title":   titleContent,
+				"length":  titleLength,
+				"limit":   *c.MaxTitleLength,
+				"overage": overage,
 			},
-		))
+		})
 	}
 
 	if c.MinTitleLength != nil && titleLength < *c.MinTitleLength {
 		message := fmt.Sprintf("Title length (%d) is less than the recommended minimum of %d.", titleLength, *c.MinTitleLength)
 
-		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
-			c,
-			c.MajorLengthDeviationSeverity,
-			message,
-			map[string]any{
-				"issue_type": "length_min",
-				"title":      titleContent,
-				"length":     titleLength,
-				"limit":      *c.MinTitleLength,
+		builder.Add(domain.Finding{
+			Type:     "length_min",
+			Severity: c.MajorLengthDeviationSeverity,
+			Message:  message,
+			Data: map[string]any{
+				"title":  titleContent,
+				"length": titleLength,
+				"limit":  *c.MinTitleLength,
 			},
-		))
+		})
 	}
 }
 

@@ -29,17 +29,15 @@ func (c *TransferStatsLogCheck) Supports(doc *domain.Document) bool {
 	return true
 }
 
-func (c *TransferStatsLogCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
+func (c *TransferStatsLogCheck) Apply(ctx context.Context, doc *domain.Document) domain.Issue {
 	if doc.TransferStats == nil {
-		return []domain.Issue{
-			domain.NewPassIssueWithDetails(
-				c,
-				"Transfer stats were not collected for this request.",
-				map[string]any{
-					"note": "To enable, ensure httptrace is configured on the Fetcher.",
-				},
-			),
-		}
+		return domain.NewPassIssueWithDetails(
+			c,
+			"Transfer stats were not collected for this request.",
+			map[string]any{
+				"note": "To enable, ensure httptrace is configured on the Fetcher.",
+			},
+		)
 	}
 
 	stats := doc.TransferStats
@@ -54,12 +52,10 @@ func (c *TransferStatsLogCheck) Apply(ctx context.Context, doc *domain.Document)
 		"is_https":             stats.IsHTTPS,
 	}
 
-	return []domain.Issue{
-		domain.NewFailIssue(
-			c,
-			c.Severity,
-			fmt.Sprintf("Request completed in %dms.", totalTimeMs),
-			details,
-		),
-	}
+	return domain.NewFailIssue(
+		c,
+		c.Severity,
+		fmt.Sprintf("Request completed in %dms.", totalTimeMs),
+		details,
+	)
 }

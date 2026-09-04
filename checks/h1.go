@@ -46,76 +46,85 @@ func (c *H1Check) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *H1Check) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
-	var detectedIssues []domain.Issue
-
+func (c *H1Check) Apply(ctx context.Context, doc *domain.Document) domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				domain.SeverityError,
-				fmt.Sprintf("Error during heading check: %s", err.Error()),
-				nil,
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			domain.SeverityError,
+			fmt.Sprintf("Error during heading check: %s", err.Error()),
+			nil,
+		)
 	}
 
 	h1Nodes := c.findH1Nodes(root)
 	headingNodeCount := len(h1Nodes)
 
 	if headingNodeCount == 0 {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				c.MissingEmptySeverity,
-				"Missing <h1> tag.",
-				map[string]any{
-					"issue_type": "missing",
-				},
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			c.MissingEmptySeverity,
+			"Missing <h1> tag.",
+			map[string]any{
+				"issue_type": "missing",
+			},
+		)
 	}
 
+	builder := domain.NewIssueBuilder()
+
 	if headingNodeCount > 1 {
-		detectedIssues = append(detectedIssues, domain.NewFailIssue(
-			c,
-			c.MultipleSeverity,
-			"Multiple <h1> tags found.",
-			map[string]any{
-				"issue_type": "multiple",
-				"count":      headingNodeCount,
+		builder.Add(domain.Finding{
+			Type:     "multiple",
+			Severity: c.MultipleSeverity,
+			Message:  "Multiple <h1> tags found.",
+			Data: map[string]any{
+				"count": headingNodeCount,
 			},
-		))
+		})
 	}
 
 	headingContent := strings.TrimSpace(c.extractText(h1Nodes[0]))
 	if headingContent == "" {
-		detectedIssues = append(detectedIssues, domain.NewFailIssue(
-			c,
-			c.MissingEmptySeverity,
-			"<h1> tag is empty or contains only whitespace.",
-			map[string]any{
-				"issue_type": "empty",
-			},
-		))
+		builder.Add(domain.Finding{
+			Type:     "empty",
+			Severity: c.MissingEmptySeverity,
+			Message:  "<h1> tag is empty or contains only whitespace.",
+		})
 	} else {
-		c.checkLength(&detectedIssues, headingContent)
+		c.checkLength(builder, headingContent)
 	}
 
-	if len(detectedIssues) > 0 {
-		return detectedIssues
+	if builder.HasFindings() {
+		return domain.NewFailIssue(c, builder.Severity(), c.summary(builder), builder.Details())
 	}
 
-	return []domain.Issue{
-		domain.NewPassIssue(
-			c,
-			"Heading is present and has appropriate length.",
-		),
-	}
+	return domain.NewPassIssue(
+		c,
+		"Heading is present and has appropriate length.",
+	)
 }
 
-func (c *H1Check) checkLength(detectedIssues *[]domain.Issue, headingContent string) {
+// summary renders a short message for the aggregated issue from the kinds of
+// findings collected.
+func (c *H1Check) summary(builder *domain.IssueBuilder) string {
+	var parts []string
+	if builder.CountByType("multiple") > 0 {
+		parts = append(parts, "Multiple <h1> tags found.")
+	}
+	if builder.CountByType("empty") > 0 {
+		parts = append(parts, "The <h1> tag is empty or contains only whitespace.")
+	}
+	if builder.CountByType("length_max") > 0 {
+		parts = append(parts, "The <h1> heading is longer than the recommended maximum.")
+	}
+	if builder.CountByType("length_min") > 0 {
+		parts = append(parts, "The <h1> heading is shorter than the recommended minimum.")
+	}
+	return strings.Join(parts, " ")
+}
+
+func (c *H1Check) checkLength(builder *domain.IssueBuilder, headingContent string) {
 	headingLength := utf8.RuneCountInString(headingContent)
 
 	if c.MaxHeadingLength != nil && headingLength > *c.MaxHeadingLength {
@@ -126,36 +135,34 @@ func (c *H1Check) checkLength(detectedIssues *[]domain.Issue, headingContent str
 			level = c.MajorLengthDeviationSeverity
 		}
 
-		message := fmt.Sprintf("Title length (%d) exceeds the ideal maximum of %d by %d characters.", headingLength, *c.MaxHeadingLength, overage)
+		message := fmt.Sprintf("Heading length (%d) exceeds the ideal maximum of %d by %d characters.", headingLength, *c.MaxHeadingLength, overage)
 
-		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
-			c,
-			level,
-			message,
-			map[string]any{
-				"issue_type": "length_max",
-				"title":      headingContent,
-				"length":     headingLength,
-				"limit":      *c.MaxHeadingLength,
-				"overage":    overage,
+		builder.Add(domain.Finding{
+			Type:     "length_max",
+			Severity: level,
+			Message:  message,
+			Data: map[string]any{
+				"heading": headingContent,
+				"length":  headingLength,
+				"limit":   *c.MaxHeadingLength,
+				"overage": overage,
 			},
-		))
+		})
 	}
 
 	if c.MinHeadingLength != nil && headingLength < *c.MinHeadingLength {
-		message := fmt.Sprintf("Title length (%d) is less than the recommended minimum of %d.", headingLength, *c.MinHeadingLength)
+		message := fmt.Sprintf("Heading length (%d) is less than the recommended minimum of %d.", headingLength, *c.MinHeadingLength)
 
-		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
-			c,
-			c.MajorLengthDeviationSeverity,
-			message,
-			map[string]any{
-				"issue_type": "length_min",
-				"title":      headingContent,
-				"length":     headingLength,
-				"limit":      *c.MinHeadingLength,
+		builder.Add(domain.Finding{
+			Type:     "length_min",
+			Severity: c.MajorLengthDeviationSeverity,
+			Message:  message,
+			Data: map[string]any{
+				"heading": headingContent,
+				"length":  headingLength,
+				"limit":   *c.MinHeadingLength,
 			},
-		))
+		})
 	}
 }
 

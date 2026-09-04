@@ -54,91 +54,102 @@ type twitterTagNode struct {
 	Content  string
 }
 
-func (c *TwitterCardCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
+func (c *TwitterCardCheck) Apply(ctx context.Context, doc *domain.Document) domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				domain.SeverityError,
-				fmt.Sprintf("Error during Twitter Card check: %s", err.Error()),
-				nil,
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			domain.SeverityError,
+			fmt.Sprintf("Error during Twitter Card check: %s", err.Error()),
+			nil,
+		)
 	}
 
 	presentTwitterTags := c.findTwitterTags(root)
 	presentProperties := make(map[string]string)
-	var detectedIssues []domain.Issue
+	builder := domain.NewIssueBuilder()
 
 	for _, tag := range presentTwitterTags {
 		property := tag.Property
 		content := tag.Content
 
 		if _, exists := presentProperties[property]; exists {
-			detectedIssues = append(detectedIssues, domain.NewFailIssue(
-				c,
-				c.ValidationSeverity,
-				fmt.Sprintf("Multiple Twitter Card tags found for property '%s'.", property),
-				map[string]any{
-					"issue_type": "multiple",
-					"property":   property,
+			builder.Add(domain.Finding{
+				Type:     "multiple",
+				Severity: c.ValidationSeverity,
+				Message:  fmt.Sprintf("Multiple Twitter Card tags found for property '%s'.", property),
+				Data: map[string]any{
+					"property": property,
 				},
-			))
+			})
 		}
 		presentProperties[property] = content
 
 		if content == "" {
-			detectedIssues = append(detectedIssues, domain.NewFailIssue(
-				c,
-				c.ValidationSeverity,
-				fmt.Sprintf("Twitter Card property '%s' has empty content.", property),
-				map[string]any{
-					"issue_type": "empty_content",
-					"property":   property,
+			builder.Add(domain.Finding{
+				Type:     "empty_content",
+				Severity: c.ValidationSeverity,
+				Message:  fmt.Sprintf("Twitter Card property '%s' has empty content.", property),
+				Data: map[string]any{
+					"property": property,
 				},
-			))
+			})
 		}
 	}
 
 	for _, property := range c.RequiredProperties {
 		if _, exists := presentProperties[property]; !exists {
-			detectedIssues = append(detectedIssues, domain.NewFailIssue(
-				c,
-				c.MissingRequiredSeverity,
-				fmt.Sprintf("Required Twitter Card property '%s' is missing.", property),
-				map[string]any{
-					"issue_type": "missing_required",
-					"property":   property,
+			builder.Add(domain.Finding{
+				Type:     "missing_required",
+				Severity: c.MissingRequiredSeverity,
+				Message:  fmt.Sprintf("Required Twitter Card property '%s' is missing.", property),
+				Data: map[string]any{
+					"property": property,
 				},
-			))
+			})
 		}
 	}
 
 	if cardType, ok := presentProperties["twitter:card"]; ok {
 		if _, isValid := allowedTwitterCardTypes[cardType]; !isValid {
-			detectedIssues = append(detectedIssues, domain.NewFailIssue(
-				c,
-				c.ValidationSeverity,
-				fmt.Sprintf("Twitter Card property 'twitter:card' has an invalid value '%s'.", cardType),
-				map[string]any{
-					"issue_type": "invalid_card_type",
-					"content":    cardType,
+			builder.Add(domain.Finding{
+				Type:     "invalid_card_type",
+				Severity: c.ValidationSeverity,
+				Message:  fmt.Sprintf("Twitter Card property 'twitter:card' has an invalid value '%s'.", cardType),
+				Data: map[string]any{
+					"content": cardType,
 				},
-			))
+			})
 		}
 	}
 
-	if len(detectedIssues) > 0 {
-		return detectedIssues
+	if builder.HasFindings() {
+		return domain.NewFailIssue(c, builder.Severity(), c.summary(builder), builder.Details())
 	}
 
-	return []domain.Issue{
-		domain.NewPassIssue(
-			c,
-			"All required Twitter Card tags are present and valid.",
-		),
+	return domain.NewPassIssue(
+		c,
+		"All required Twitter Card tags are present and valid.",
+	)
+}
+
+// summary renders a short message for the aggregated issue from the kinds of
+// findings collected.
+func (c *TwitterCardCheck) summary(builder *domain.IssueBuilder) string {
+	var parts []string
+	if count := builder.CountByType("multiple"); count > 0 {
+		parts = append(parts, fmt.Sprintf("%d property(ies) are declared more than once", count))
 	}
+	if count := builder.CountByType("empty_content"); count > 0 {
+		parts = append(parts, fmt.Sprintf("%d tag(s) have empty content", count))
+	}
+	if count := builder.CountByType("missing_required"); count > 0 {
+		parts = append(parts, fmt.Sprintf("%d required property(ies) are missing", count))
+	}
+	if builder.CountByType("invalid_card_type") > 0 {
+		parts = append(parts, "the twitter:card value is invalid")
+	}
+	return strings.Join(parts, "; ") + "."
 }
 
 func (c *TwitterCardCheck) findTwitterTags(root *html.Node) []twitterTagNode {

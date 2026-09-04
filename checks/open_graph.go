@@ -122,22 +122,20 @@ type ogTagNode struct {
 	Content  string
 }
 
-func (c *OpenGraphCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
+func (c *OpenGraphCheck) Apply(ctx context.Context, doc *domain.Document) domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				domain.SeverityError,
-				fmt.Sprintf("Error during Open Graph check: %s", err.Error()),
-				nil,
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			domain.SeverityError,
+			fmt.Sprintf("Error during Open Graph check: %s", err.Error()),
+			nil,
+		)
 	}
 
 	presentOgTags := c.findOGTags(root)
 	presentProperties := make(map[string][]string)
-	var detectedIssues []domain.Issue
+	builder := domain.NewIssueBuilder()
 
 	for _, tag := range presentOgTags {
 		property := tag.Property
@@ -146,92 +144,119 @@ func (c *OpenGraphCheck) Apply(ctx context.Context, doc *domain.Document) []doma
 		presentProperties[property] = append(presentProperties[property], content)
 
 		if content == "" {
-			detectedIssues = append(detectedIssues, domain.NewFailIssue(
-				c,
-				c.ValidationSeverity,
-				fmt.Sprintf("Open Graph property '%s' has empty content.", property),
-				map[string]any{
-					"issue_type": "empty_content",
-					"property":   property,
+			builder.Add(domain.Finding{
+				Type:     "empty_content",
+				Severity: c.ValidationSeverity,
+				Message:  fmt.Sprintf("Open Graph property '%s' has empty content.", property),
+				Data: map[string]any{
+					"property": property,
 				},
-			))
+			})
 			continue
 		}
 
 		if ruleType, ok := c.KnownProperties[property]; ok {
-			c.validateContent(&detectedIssues, property, content, ruleType)
+			c.validateContent(builder, property, content, ruleType)
 		}
 	}
 
-	c.checkForDuplicates(&detectedIssues, presentProperties)
+	c.checkForDuplicates(builder, presentProperties)
 
-	c.checkForMissing(&detectedIssues, presentProperties)
+	c.checkForMissing(builder, presentProperties)
 
-	if len(detectedIssues) > 0 {
-		return detectedIssues
+	if builder.HasFindings() {
+		return domain.NewFailIssue(c, builder.Severity(), c.summary(builder), builder.Details())
 	}
 
-	return []domain.Issue{
-		domain.NewPassIssue(
-			c,
-			"Open Graph tags are well-formed and valid.",
-		),
-	}
+	return domain.NewPassIssue(
+		c,
+		"Open Graph tags are well-formed and valid.",
+	)
 }
 
-func (c *OpenGraphCheck) validateContent(detectedIssues *[]domain.Issue, property, content, ruleType string) {
+// summary renders a short message for the aggregated issue from the kinds of
+// findings collected.
+func (c *OpenGraphCheck) summary(builder *domain.IssueBuilder) string {
+	var parts []string
+	if count := builder.CountByType("missing_required"); count > 0 {
+		parts = append(parts, fmt.Sprintf("%d required property(ies) are missing", count))
+	}
+	if builder.CountByType("missing_image") > 0 {
+		parts = append(parts, "an og:image property is missing")
+	}
+	if count := builder.CountByType("missing_recommended"); count > 0 {
+		parts = append(parts, fmt.Sprintf("%d recommended property(ies) are missing", count))
+	}
+	if count := builder.CountByType("empty_content"); count > 0 {
+		parts = append(parts, fmt.Sprintf("%d tag(s) have empty content", count))
+	}
+	if count := builder.CountByType("multiple"); count > 0 {
+		parts = append(parts, fmt.Sprintf("%d non-arrayable property(ies) are declared more than once", count))
+	}
+	if count := builder.CountByType("relative_url"); count > 0 {
+		parts = append(parts, fmt.Sprintf("%d value(s) are not absolute URLs", count))
+	}
+	if count := builder.CountByType("not_numeric"); count > 0 {
+		parts = append(parts, fmt.Sprintf("%d value(s) are not numeric", count))
+	}
+	if count := builder.CountByType("invalid_mime_type"); count > 0 {
+		parts = append(parts, fmt.Sprintf("%d value(s) have an invalid MIME type", count))
+	}
+	if count := builder.CountByType("invalid_datetime"); count > 0 {
+		parts = append(parts, fmt.Sprintf("%d value(s) have an invalid datetime format", count))
+	}
+	return strings.Join(parts, "; ") + "."
+}
+
+func (c *OpenGraphCheck) validateContent(builder *domain.IssueBuilder, property, content, ruleType string) {
 	switch ruleType {
 	case "absolute_url":
 		if !strings.HasPrefix(content, "http://") && !strings.HasPrefix(content, "https://") {
-			*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
-				c,
-				c.ValidationSeverity,
-				fmt.Sprintf("Open Graph property '%s' must be an absolute URL.", property),
-				map[string]any{
-					"issue_type": "relative_url",
-					"property":   property,
-					"content":    content,
+			builder.Add(domain.Finding{
+				Type:     "relative_url",
+				Severity: c.ValidationSeverity,
+				Message:  fmt.Sprintf("Open Graph property '%s' must be an absolute URL.", property),
+				Data: map[string]any{
+					"property": property,
+					"content":  content,
 				},
-			))
+			})
 		}
 	case "numeric":
 		if _, err := strconv.ParseFloat(content, 64); err != nil {
-			*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
-				c,
-				c.ValidationSeverity,
-				fmt.Sprintf("Open Graph property '%s' must have a numeric value.", property),
-				map[string]any{
-					"issue_type": "not_numeric",
-					"property":   property,
-					"content":    content,
+			builder.Add(domain.Finding{
+				Type:     "not_numeric",
+				Severity: c.ValidationSeverity,
+				Message:  fmt.Sprintf("Open Graph property '%s' must have a numeric value.", property),
+				Data: map[string]any{
+					"property": property,
+					"content":  content,
 				},
-			))
+			})
 		}
 	case "mime_type":
 		if !mimeTypeRegex.MatchString(content) {
-			*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
-				c,
-				c.ValidationSeverity,
-				fmt.Sprintf("Open Graph property '%s' has an invalid MIME type format.", property),
-				map[string]any{
-					"issue_type": "invalid_mime_type",
-					"property":   property,
-					"content":    content,
+			builder.Add(domain.Finding{
+				Type:     "invalid_mime_type",
+				Severity: c.ValidationSeverity,
+				Message:  fmt.Sprintf("Open Graph property '%s' has an invalid MIME type format.", property),
+				Data: map[string]any{
+					"property": property,
+					"content":  content,
 				},
-			))
+			})
 		}
 	case "datetime":
 		if !c.isValidDateTime(content) {
-			*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
-				c,
-				c.ValidationSeverity,
-				fmt.Sprintf("Open Graph property '%s' has an invalid datetime format.", property),
-				map[string]any{
-					"issue_type": "invalid_datetime",
-					"property":   property,
-					"content":    content,
+			builder.Add(domain.Finding{
+				Type:     "invalid_datetime",
+				Severity: c.ValidationSeverity,
+				Message:  fmt.Sprintf("Open Graph property '%s' has an invalid datetime format.", property),
+				Data: map[string]any{
+					"property": property,
+					"content":  content,
 				},
-			))
+			})
 		}
 	}
 }
@@ -245,65 +270,61 @@ func (c *OpenGraphCheck) isValidDateTime(val string) bool {
 	return false
 }
 
-func (c *OpenGraphCheck) checkForDuplicates(detectedIssues *[]domain.Issue, presentProperties map[string][]string) {
+func (c *OpenGraphCheck) checkForDuplicates(builder *domain.IssueBuilder, presentProperties map[string][]string) {
 	for property, values := range presentProperties {
 		if len(values) > 1 {
 			if _, isArrayable := c.ArrayableProperties[property]; !isArrayable {
-				*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
-					c,
-					c.ValidationSeverity,
-					fmt.Sprintf("Multiple Open Graph tags found for non-arrayable property '%s'.", property),
-					map[string]any{
-						"issue_type": "multiple",
-						"property":   property,
-						"count":      len(values),
+				builder.Add(domain.Finding{
+					Type:     "multiple",
+					Severity: c.ValidationSeverity,
+					Message:  fmt.Sprintf("Multiple Open Graph tags found for non-arrayable property '%s'.", property),
+					Data: map[string]any{
+						"property": property,
+						"count":    len(values),
 					},
-				))
+				})
 			}
 		}
 	}
 }
 
-func (c *OpenGraphCheck) checkForMissing(detectedIssues *[]domain.Issue, presentProperties map[string][]string) {
+func (c *OpenGraphCheck) checkForMissing(builder *domain.IssueBuilder, presentProperties map[string][]string) {
 	for _, property := range c.RequiredProperties {
 		if _, ok := presentProperties[property]; !ok {
-			*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
-				c,
-				c.MissingRequiredSeverity,
-				fmt.Sprintf("Required Open Graph property '%s' is missing.", property),
-				map[string]any{
-					"issue_type": "missing_required",
-					"property":   property,
+			builder.Add(domain.Finding{
+				Type:     "missing_required",
+				Severity: c.MissingRequiredSeverity,
+				Message:  fmt.Sprintf("Required Open Graph property '%s' is missing.", property),
+				Data: map[string]any{
+					"property": property,
 				},
-			))
+			})
 		}
 	}
 
 	_, hasImage := presentProperties["og:image"]
 	_, hasImageURL := presentProperties["og:image:url"]
 	if !hasImage && !hasImageURL {
-		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
-			c,
-			c.MissingRequiredSeverity,
-			"Required Open Graph image ('og:image' or 'og:image:url') is missing.",
-			map[string]any{
-				"issue_type": "missing_image",
-				"property":   "og:image",
+		builder.Add(domain.Finding{
+			Type:     "missing_image",
+			Severity: c.MissingRequiredSeverity,
+			Message:  "Required Open Graph image ('og:image' or 'og:image:url') is missing.",
+			Data: map[string]any{
+				"property": "og:image",
 			},
-		))
+		})
 	}
 
 	for _, property := range c.RecommendedProperties {
 		if _, ok := presentProperties[property]; !ok {
-			*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
-				c,
-				c.MissingRecommendedSeverity,
-				fmt.Sprintf("Recommended Open Graph property '%s' is missing.", property),
-				map[string]any{
-					"issue_type": "missing_recommended",
-					"property":   property,
+			builder.Add(domain.Finding{
+				Type:     "missing_recommended",
+				Severity: c.MissingRecommendedSeverity,
+				Message:  fmt.Sprintf("Recommended Open Graph property '%s' is missing.", property),
+				Data: map[string]any{
+					"property": property,
 				},
-			))
+			})
 		}
 	}
 }

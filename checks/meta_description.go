@@ -46,76 +46,85 @@ func (c *MetaDescriptionCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *MetaDescriptionCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
-	var detectedIssues []domain.Issue
-
+func (c *MetaDescriptionCheck) Apply(ctx context.Context, doc *domain.Document) domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				domain.SeverityError,
-				fmt.Sprintf("Error during meta description check: %s", err.Error()),
-				nil,
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			domain.SeverityError,
+			fmt.Sprintf("Error during meta description check: %s", err.Error()),
+			nil,
+		)
 	}
 
 	metaDescNodes := c.findMetaDescriptions(root)
 	descNodeCount := len(metaDescNodes)
 
 	if descNodeCount == 0 {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				c.MissingEmptySeverity,
-				"Missing <meta name=\"description\"> tag.",
-				map[string]any{
-					"issue_type": "missing",
-				},
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			c.MissingEmptySeverity,
+			"Missing <meta name=\"description\"> tag.",
+			map[string]any{
+				"issue_type": "missing",
+			},
+		)
 	}
 
+	builder := domain.NewIssueBuilder()
+
 	if descNodeCount > 1 {
-		detectedIssues = append(detectedIssues, domain.NewFailIssue(
-			c,
-			c.MultipleSeverity,
-			"Multiple <meta name=\"description\"> tags found.",
-			map[string]any{
-				"issue_type": "multiple",
-				"count":      descNodeCount,
+		builder.Add(domain.Finding{
+			Type:     "multiple",
+			Severity: c.MultipleSeverity,
+			Message:  "Multiple <meta name=\"description\"> tags found.",
+			Data: map[string]any{
+				"count": descNodeCount,
 			},
-		))
+		})
 	}
 
 	descriptionContent := strings.TrimSpace(metaDescNodes[0])
 	if descriptionContent == "" {
-		detectedIssues = append(detectedIssues, domain.NewFailIssue(
-			c,
-			c.MissingEmptySeverity,
-			"<meta name=\"description\"> tag content is empty.",
-			map[string]any{
-				"issue_type": "empty",
-			},
-		))
+		builder.Add(domain.Finding{
+			Type:     "empty",
+			Severity: c.MissingEmptySeverity,
+			Message:  "<meta name=\"description\"> tag content is empty.",
+		})
 	} else {
-		c.checkLength(&detectedIssues, descriptionContent)
+		c.checkLength(builder, descriptionContent)
 	}
 
-	if len(detectedIssues) > 0 {
-		return detectedIssues
+	if builder.HasFindings() {
+		return domain.NewFailIssue(c, builder.Severity(), c.summary(builder), builder.Details())
 	}
 
-	return []domain.Issue{
-		domain.NewPassIssue(
-			c,
-			"Meta description is present and has appropriate length.",
-		),
-	}
+	return domain.NewPassIssue(
+		c,
+		"Meta description is present and has appropriate length.",
+	)
 }
 
-func (c *MetaDescriptionCheck) checkLength(detectedIssues *[]domain.Issue, descriptionContent string) {
+// summary renders a short message for the aggregated issue from the kinds of
+// findings collected.
+func (c *MetaDescriptionCheck) summary(builder *domain.IssueBuilder) string {
+	var parts []string
+	if builder.CountByType("multiple") > 0 {
+		parts = append(parts, "Multiple meta description tags found.")
+	}
+	if builder.CountByType("empty") > 0 {
+		parts = append(parts, "The meta description content is empty.")
+	}
+	if builder.CountByType("length_max") > 0 {
+		parts = append(parts, "The meta description is longer than the recommended maximum.")
+	}
+	if builder.CountByType("length_min") > 0 {
+		parts = append(parts, "The meta description is shorter than the recommended minimum.")
+	}
+	return strings.Join(parts, " ")
+}
+
+func (c *MetaDescriptionCheck) checkLength(builder *domain.IssueBuilder, descriptionContent string) {
 	descLength := utf8.RuneCountInString(descriptionContent)
 
 	if c.MaxDescriptionLength != nil && descLength > *c.MaxDescriptionLength {
@@ -128,34 +137,32 @@ func (c *MetaDescriptionCheck) checkLength(detectedIssues *[]domain.Issue, descr
 
 		message := fmt.Sprintf("Meta description length (%d) exceeds the ideal maximum of %d by %d characters.", descLength, *c.MaxDescriptionLength, overage)
 
-		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
-			c,
-			level,
-			message,
-			map[string]any{
-				"issue_type": "length_max",
-				"title":      descriptionContent,
-				"length":     descLength,
-				"limit":      *c.MaxDescriptionLength,
-				"overage":    overage,
+		builder.Add(domain.Finding{
+			Type:     "length_max",
+			Severity: level,
+			Message:  message,
+			Data: map[string]any{
+				"description": descriptionContent,
+				"length":      descLength,
+				"limit":       *c.MaxDescriptionLength,
+				"overage":     overage,
 			},
-		))
+		})
 	}
 
 	if c.MinDescriptionLength != nil && descLength < *c.MinDescriptionLength {
 		message := fmt.Sprintf("Meta description length (%d) is less than the recommended minimum of %d.", descLength, *c.MinDescriptionLength)
 
-		*detectedIssues = append(*detectedIssues, domain.NewFailIssue(
-			c,
-			c.MajorLengthDeviationSeverity,
-			message,
-			map[string]any{
-				"issue_type": "length_min",
-				"title":      descriptionContent,
-				"length":     descLength,
-				"limit":      *c.MinDescriptionLength,
+		builder.Add(domain.Finding{
+			Type:     "length_min",
+			Severity: c.MajorLengthDeviationSeverity,
+			Message:  message,
+			Data: map[string]any{
+				"description": descriptionContent,
+				"length":      descLength,
+				"limit":       *c.MinDescriptionLength,
 			},
-		))
+		})
 	}
 }
 

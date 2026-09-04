@@ -38,53 +38,51 @@ type insecureAsset struct {
 	AssetURL string
 }
 
-func (c *MixedContentCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
+func (c *MixedContentCheck) Apply(ctx context.Context, doc *domain.Document) domain.Issue {
 	if strings.HasPrefix(doc.URL, "http://") {
-		return []domain.Issue{
-			domain.NewPassIssue(
-				c,
-				"Skipped: Page is not loaded over HTTPS.",
-			),
-		}
+		return domain.NewPassIssue(
+			c,
+			"Skipped: Page is not loaded over HTTPS.",
+		)
 	}
 
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				domain.SeverityError,
-				fmt.Sprintf("Error during mixed content check: %s", err.Error()),
-				nil,
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			domain.SeverityError,
+			fmt.Sprintf("Error during mixed content check: %s", err.Error()),
+			nil,
+		)
 	}
 
 	assets := c.findInsecureAssets(root)
 
 	if len(assets) > 0 {
-		var detectedIssues []domain.Issue
+		builder := domain.NewIssueBuilder()
 		for _, asset := range assets {
-			detectedIssues = append(detectedIssues, domain.NewFailIssue(
-				c,
-				c.Severity,
-				"Insecure asset loaded on a secure page (mixed content).",
-				map[string]any{
-					"issue_type": "mixed_content",
-					"tag":        asset.Tag,
-					"asset_url":  asset.AssetURL,
+			builder.Add(domain.Finding{
+				Type:     "mixed_content",
+				Severity: c.Severity,
+				Message:  "Insecure asset loaded on a secure page (mixed content).",
+				Data: map[string]any{
+					"tag":       asset.Tag,
+					"asset_url": asset.AssetURL,
 				},
-			))
+			})
 		}
-		return detectedIssues
+		return domain.NewFailIssue(
+			c,
+			builder.Severity(),
+			fmt.Sprintf("%d insecure asset(s) are loaded over HTTP on a secure page (mixed content).", builder.Count()),
+			builder.Details(),
+		)
 	}
 
-	return []domain.Issue{
-		domain.NewPassIssue(
-			c,
-			"No mixed content found on the page.",
-		),
-	}
+	return domain.NewPassIssue(
+		c,
+		"No mixed content found on the page.",
+	)
 }
 
 func (c *MixedContentCheck) findInsecureAssets(root *html.Node) []insecureAsset {

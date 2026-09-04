@@ -38,102 +38,88 @@ func (c *CanonicalURLCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *CanonicalURLCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
+func (c *CanonicalURLCheck) Apply(ctx context.Context, doc *domain.Document) domain.Issue {
 	node, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				domain.SeverityError,
-				fmt.Sprintf("Error during canonical URL check: %s", err.Error()),
-				nil,
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			domain.SeverityError,
+			fmt.Sprintf("Error during canonical URL check: %s", err.Error()),
+			nil,
+		)
 	}
 
 	canonicalNodes := c.findCanonicalTags(node)
 	nodeCount := len(canonicalNodes)
 
 	if nodeCount == 0 {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				c.MissingSeverity,
-				"The canonical link tag (<link rel=\"canonical\">) is missing.",
-				map[string]any{
-					"issue_type": "missing",
-				},
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			c.MissingSeverity,
+			"The canonical link tag (<link rel=\"canonical\">) is missing.",
+			map[string]any{
+				"issue_type": "missing",
+			},
+		)
 	}
 
 	if nodeCount > 1 {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				c.MultipleSeverity,
-				fmt.Sprintf("Multiple canonical link tags found (%d). There must be exactly one.", nodeCount),
-				map[string]any{
-					"issue_type": "multiple",
-					"count":      nodeCount,
-				},
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			c.MultipleSeverity,
+			fmt.Sprintf("Multiple canonical link tags found (%d). There must be exactly one.", nodeCount),
+			map[string]any{
+				"issue_type": "multiple",
+				"count":      nodeCount,
+			},
+		)
 	}
 
 	href := strings.TrimSpace(canonicalNodes[0])
 
 	if href == "" {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				c.InvalidURLSeverity,
-				"The canonical link tag has an empty href attribute.",
-				map[string]any{
-					"issue_type": "empty_href",
-				},
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			c.InvalidURLSeverity,
+			"The canonical link tag has an empty href attribute.",
+			map[string]any{
+				"issue_type": "empty_href",
+			},
+		)
 	}
 
 	if !strings.HasPrefix(href, "http://") && !strings.HasPrefix(href, "https://") {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				c.InvalidURLSeverity,
-				"The canonical link's href attribute must be an absolute URL.",
-				map[string]any{
-					"issue_type": "relative_url",
-					"href":       href,
-				},
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			c.InvalidURLSeverity,
+			"The canonical link's href attribute must be an absolute URL.",
+			map[string]any{
+				"issue_type": "relative_url",
+				"href":       href,
+			},
+		)
 	}
 
 	parsedURL, err := url.ParseRequestURI(href)
 	if err != nil || parsedURL.Host == "" {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				c.InvalidURLSeverity,
-				"The canonical link has a malformed URL in its href attribute.",
-				map[string]any{
-					"issue_type": "malformed_url",
-					"href":       href,
-				},
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			c.InvalidURLSeverity,
+			"The canonical link has a malformed URL in its href attribute.",
+			map[string]any{
+				"issue_type": "malformed_url",
+				"href":       href,
+			},
+		)
 	}
 
-	return []domain.Issue{
-		domain.NewPassIssueWithDetails(
-			c,
-			"The canonical link tag is present and valid.",
-			map[string]any{
-				"href": href,
-			},
-		),
-	}
+	return domain.NewPassIssueWithDetails(
+		c,
+		"The canonical link tag is present and valid.",
+		map[string]any{
+			"href": href,
+		},
+	)
 }
 
 func (c *CanonicalURLCheck) findCanonicalTags(root *html.Node) []string {

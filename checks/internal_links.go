@@ -59,46 +59,45 @@ func (c *InternalLinksCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *InternalLinksCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
+func (c *InternalLinksCheck) Apply(ctx context.Context, doc *domain.Document) domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				domain.SeverityError,
-				fmt.Sprintf("Error during internal link check: %s", err.Error()),
-				nil,
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			domain.SeverityError,
+			fmt.Sprintf("Error during internal link check: %s", err.Error()),
+			nil,
+		)
 	}
 
 	baseParsed, err := url.Parse(doc.URL)
 	if err != nil {
-		return nil
+		return domain.NewPassIssue(
+			c,
+			"Skipped: could not parse the page URL.",
+		)
 	}
 
 	internalPaths := c.collectInternalPaths(root, baseParsed)
 	if len(internalPaths) == 0 {
-		return []domain.Issue{
-			domain.NewPassIssue(
-				c,
-				"No internal links found to check.",
-			),
-		}
+		return domain.NewPassIssue(
+			c,
+			"No internal links found to check.",
+		)
 	}
 
 	var (
-		detectedIssues []domain.Issue
-		toCheck        []string
-		mu             sync.Mutex
-		wg             sync.WaitGroup
-		semaphore      = make(chan struct{}, c.MaxConcurrency)
+		builder   = domain.NewIssueBuilder()
+		toCheck   []string
+		mu        sync.Mutex
+		wg        sync.WaitGroup
+		semaphore = make(chan struct{}, c.MaxConcurrency)
 	)
 
 	for _, path := range internalPaths {
 		if cached, ok := c.Cache.Get(path); ok {
 			if !cached.Passed {
-				detectedIssues = append(detectedIssues, c.buildIssue(path, cached.StatusCode, cached.ErrorMessage))
+				builder.Add(c.buildFinding(path, cached.StatusCode, cached.ErrorMessage))
 			}
 		} else {
 			toCheck = append(toCheck, path)
@@ -124,7 +123,7 @@ func (c *InternalLinksCheck) Apply(ctx context.Context, doc *domain.Document) []
 
 			if !passed {
 				mu.Lock()
-				detectedIssues = append(detectedIssues, c.buildIssue(targetPath, statusCode, errMsg))
+				builder.Add(c.buildFinding(targetPath, statusCode, errMsg))
 				mu.Unlock()
 			}
 		}(path)
@@ -132,16 +131,19 @@ func (c *InternalLinksCheck) Apply(ctx context.Context, doc *domain.Document) []
 
 	wg.Wait()
 
-	if len(detectedIssues) > 0 {
-		return detectedIssues
+	if builder.HasFindings() {
+		return domain.NewFailIssue(
+			c,
+			builder.Severity(),
+			fmt.Sprintf("%d internal link(s) appear to be broken.", builder.Count()),
+			builder.Details(),
+		)
 	}
 
-	return []domain.Issue{
-		domain.NewPassIssue(
-			c,
-			"All internal links appear to be valid.",
-		),
-	}
+	return domain.NewPassIssue(
+		c,
+		"All internal links appear to be valid.",
+	)
 }
 
 func (c *InternalLinksCheck) validatePath(ctx context.Context, resolvedURL string) (bool, int, string) {
@@ -164,24 +166,23 @@ func (c *InternalLinksCheck) validatePath(ctx context.Context, resolvedURL strin
 	return true, resp.StatusCode, ""
 }
 
-func (c *InternalLinksCheck) buildIssue(path string, statusCode int, errMsg string) domain.Issue {
-	details := map[string]any{
-		"issue_type": "unroutable_link",
-		"link_path":  path,
+func (c *InternalLinksCheck) buildFinding(path string, statusCode int, errMsg string) domain.Finding {
+	data := map[string]any{
+		"link_path": path,
 	}
 	if statusCode > 0 {
-		details["status_code"] = statusCode
+		data["status_code"] = statusCode
 	}
 	if errMsg != "" {
-		details["error_message"] = errMsg
+		data["error_message"] = errMsg
 	}
 
-	return domain.NewFailIssue(
-		c,
-		c.Severity,
-		fmt.Sprintf("Internal link appears to be broken. Path '%s' is not routable.", path),
-		details,
-	)
+	return domain.Finding{
+		Type:     "unroutable_link",
+		Severity: c.Severity,
+		Message:  fmt.Sprintf("Internal link appears to be broken. Path '%s' is not routable.", path),
+		Data:     data,
+	}
 }
 
 func (c *InternalLinksCheck) collectInternalPaths(root *html.Node, baseParsed *url.URL) []string {

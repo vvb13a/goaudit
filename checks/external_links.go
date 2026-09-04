@@ -59,41 +59,37 @@ func (c *ExternalLinksCheck) Supports(doc *domain.Document) bool {
 	return doc.IsHTML()
 }
 
-func (c *ExternalLinksCheck) Apply(ctx context.Context, doc *domain.Document) []domain.Issue {
+func (c *ExternalLinksCheck) Apply(ctx context.Context, doc *domain.Document) domain.Issue {
 	root, err := html.Parse(bytes.NewReader(doc.Body))
 	if err != nil {
-		return []domain.Issue{
-			domain.NewFailIssue(
-				c,
-				domain.SeverityError,
-				fmt.Sprintf("Error during external link check: %s", err.Error()),
-				nil,
-			),
-		}
+		return domain.NewFailIssue(
+			c,
+			domain.SeverityError,
+			fmt.Sprintf("Error during external link check: %s", err.Error()),
+			nil,
+		)
 	}
 
 	externalUrls := c.collectExternalUrls(root, doc)
 	if len(externalUrls) == 0 {
-		return []domain.Issue{
-			domain.NewPassIssue(
-				c,
-				"No external links found to check.",
-			),
-		}
+		return domain.NewPassIssue(
+			c,
+			"No external links found to check.",
+		)
 	}
 
 	var (
-		detectedIssues []domain.Issue
-		toCheck        []string
-		mu             sync.Mutex
-		wg             sync.WaitGroup
-		semaphore      = make(chan struct{}, c.MaxConcurrency)
+		builder   = domain.NewIssueBuilder()
+		toCheck   []string
+		mu        sync.Mutex
+		wg        sync.WaitGroup
+		semaphore = make(chan struct{}, c.MaxConcurrency)
 	)
 
 	for _, targetURL := range externalUrls {
 		if cached, ok := c.Cache.Get(targetURL); ok {
 			if !cached.Passed {
-				detectedIssues = append(detectedIssues, c.buildIssue(targetURL, cached.StatusCode, cached.ErrorMessage))
+				builder.Add(c.buildFinding(targetURL, cached.StatusCode, cached.ErrorMessage))
 			}
 		} else {
 			toCheck = append(toCheck, targetURL)
@@ -118,7 +114,7 @@ func (c *ExternalLinksCheck) Apply(ctx context.Context, doc *domain.Document) []
 
 			if !passed {
 				mu.Lock()
-				detectedIssues = append(detectedIssues, c.buildIssue(target, statusCode, errMsg))
+				builder.Add(c.buildFinding(target, statusCode, errMsg))
 				mu.Unlock()
 			}
 		}(targetURL)
@@ -126,19 +122,22 @@ func (c *ExternalLinksCheck) Apply(ctx context.Context, doc *domain.Document) []
 
 	wg.Wait()
 
-	if len(detectedIssues) > 0 {
-		return detectedIssues
+	if builder.HasFindings() {
+		return domain.NewFailIssue(
+			c,
+			builder.Severity(),
+			fmt.Sprintf("%d external link(s) appear to be broken or inaccessible.", builder.Count()),
+			builder.Details(),
+		)
 	}
 
-	return []domain.Issue{
-		domain.NewPassIssueWithDetails(
-			c,
-			"All external links are accessible.",
-			map[string]any{
-				"external_urls": externalUrls,
-			},
-		),
-	}
+	return domain.NewPassIssueWithDetails(
+		c,
+		"All external links are accessible.",
+		map[string]any{
+			"external_urls": externalUrls,
+		},
+	)
 }
 
 func (c *ExternalLinksCheck) validateExternalURL(ctx context.Context, targetURL string) (bool, int, string) {
@@ -161,30 +160,28 @@ func (c *ExternalLinksCheck) validateExternalURL(ctx context.Context, targetURL 
 	return true, resp.StatusCode, ""
 }
 
-func (c *ExternalLinksCheck) buildIssue(targetURL string, statusCode int, errMsg string) domain.Issue {
+func (c *ExternalLinksCheck) buildFinding(targetURL string, statusCode int, errMsg string) domain.Finding {
 	if errMsg != "" {
-		return domain.NewFailIssue(
-			c,
-			c.Severity,
-			"Could not connect to the external link.",
-			map[string]any{
-				"issue_type":    "connection_error",
+		return domain.Finding{
+			Type:     "connection_error",
+			Severity: c.Severity,
+			Message:  "Could not connect to the external link.",
+			Data: map[string]any{
 				"link_url":      targetURL,
 				"error_message": errMsg,
 			},
-		)
+		}
 	}
 
-	return domain.NewFailIssue(
-		c,
-		c.Severity,
-		fmt.Sprintf("External link is broken or inaccessible. Responded with status code: %d", statusCode),
-		map[string]any{
-			"issue_type":  "broken_link",
+	return domain.Finding{
+		Type:     "broken_link",
+		Severity: c.Severity,
+		Message:  fmt.Sprintf("External link is broken or inaccessible. Responded with status code: %d", statusCode),
+		Data: map[string]any{
 			"link_url":    targetURL,
 			"status_code": statusCode,
 		},
-	)
+	}
 }
 
 func (c *ExternalLinksCheck) collectExternalUrls(root *html.Node, doc *domain.Document) []string {
