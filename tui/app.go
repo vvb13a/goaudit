@@ -15,23 +15,19 @@ import (
 // Deps bundles the application services and infrastructure that the UI
 // operates on. main wires them together before starting the program.
 type Deps struct {
-	ConfigManager    *service.Manager
-	Registry         *service.CheckRegistry
-	Runner           *service.Runner
-	PlanService      *service.PlanService
-	ChecklistService *service.ChecklistService
-	AuditService     *service.AuditService
-	ExcelService     *service.ExcelService
-	HtmlService      *service.HtmlService
+	ConfigManager *service.Manager
+	Registry      *service.CheckRegistry
+	Runner        *service.Runner
+	AuditService  *service.AuditService
+	ExcelService  *service.ExcelService
+	HtmlService   *service.HtmlService
 }
 
 // ViewID identifies which top-level view is currently active.
 type ViewID int
 
 const (
-	PlansView ViewID = iota
-	ChecklistsView
-	AuditsView
+	AuditsView ViewID = iota
 	HistoryView
 )
 
@@ -58,8 +54,6 @@ type Model struct {
 	nav           NavModel
 	footer        FooterModel
 	notifications NotificationModel
-	plans         PlansModel
-	checklists    ChecklistsModel
 	audits        AuditsModel
 	history       HistoryModel
 	width         int
@@ -73,10 +67,8 @@ type Model struct {
 	cycleActive bool
 	lastQuietAt time.Time
 
-	plansSized      bool
-	checklistsSized bool
-	auditsSized     bool
-	historySized    bool
+	auditsSized  bool
+	historySized bool
 }
 
 func New(deps Deps) Model {
@@ -84,14 +76,10 @@ func New(deps Deps) Model {
 		deps: deps,
 		nav: NewNavModel([]Tab{
 			{ID: AuditsView, Label: "Audits"},
-			{ID: ChecklistsView, Label: "Checklists"},
-			{ID: PlansView, Label: "Plans"},
 			{ID: HistoryView, Label: "History"},
 		}),
 		footer:        NewFooterModel(),
 		notifications: NewNotificationModel(),
-		plans:         NewPlansModel(deps),
-		checklists:    NewChecklistsModel(deps),
 		audits:        NewAuditsModel(deps),
 		history:       NewHistoryModel(),
 	}
@@ -101,14 +89,6 @@ func New(deps Deps) Model {
 // so a view only loads once it is first shown.
 func (m Model) initCmdForActiveView() tea.Cmd {
 	switch m.nav.Active() {
-	case PlansView:
-		if !m.plans.Loaded() {
-			return m.plans.Init()
-		}
-	case ChecklistsView:
-		if !m.checklists.Loaded() {
-			return m.checklists.Init()
-		}
 	case AuditsView:
 		if !m.audits.Loaded() {
 			return m.audits.Init()
@@ -145,10 +125,6 @@ func (m Model) activateCmd() tea.Cmd {
 
 	sized := false
 	switch m.nav.Active() {
-	case PlansView:
-		sized = m.plansSized
-	case ChecklistsView:
-		sized = m.checklistsSized
 	case AuditsView:
 		sized = m.auditsSized
 	case HistoryView:
@@ -174,10 +150,6 @@ func (m Model) activateCmd() tea.Cmd {
 
 func (m Model) markViewSized() {
 	switch m.nav.Active() {
-	case PlansView:
-		m.plansSized = true
-	case ChecklistsView:
-		m.checklistsSized = true
 	case AuditsView:
 		m.auditsSized = true
 	case HistoryView:
@@ -189,10 +161,6 @@ func (m Model) markViewSized() {
 // state, where tab navigation is allowed.
 func (m Model) viewIsRoot() bool {
 	switch m.nav.Active() {
-	case PlansView:
-		return m.plans.NavigationEnabled()
-	case ChecklistsView:
-		return m.checklists.NavigationEnabled()
 	case AuditsView:
 		return m.audits.NavigationEnabled()
 	case HistoryView:
@@ -297,14 +265,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch m.nav.Active() {
-	case PlansView:
-		var cmd tea.Cmd
-		m.plans, cmd = m.plans.Update(msg)
-		return m, cmd
-	case ChecklistsView:
-		var cmd tea.Cmd
-		m.checklists, cmd = m.checklists.Update(msg)
-		return m, cmd
 	case AuditsView:
 		var cmd tea.Cmd
 		m.audits, cmd = m.audits.Update(msg)
@@ -327,7 +287,6 @@ func (m Model) pushNotification(n Notification) Model {
 }
 
 func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
-	m.plans = m.plans.finishRun()
 	m.audits = m.audits.finishRun()
 
 	var notification Notification
@@ -338,7 +297,7 @@ func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
 		notification = Notification{
 			Kind: NotificationSuccess,
 			Text: fmt.Sprintf("Audit '%s' finished: %d endpoints in %v",
-				msg.audit.PlanName, len(msg.audit.Reports), msg.audit.Duration.Round(time.Millisecond).String()),
+				msg.audit.Name, len(msg.audit.Reports), msg.audit.Duration.Round(time.Millisecond).String()),
 		}
 	default:
 		notification = Notification{Kind: NotificationSuccess, Text: fmt.Sprintf("Audit '%s' finished", msg.title)}
@@ -352,10 +311,6 @@ func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) activeViewHelp() string {
 	switch m.nav.Active() {
-	case PlansView:
-		return m.plans.Help()
-	case ChecklistsView:
-		return m.checklists.Help()
 	case AuditsView:
 		return m.audits.Help()
 	case HistoryView:
@@ -442,10 +397,6 @@ func (m Model) View() string {
 
 func (m Model) activeViewContent() string {
 	switch m.nav.Active() {
-	case PlansView:
-		return m.plans.View()
-	case ChecklistsView:
-		return m.checklists.View()
 	case AuditsView:
 		return m.audits.View()
 	case HistoryView:

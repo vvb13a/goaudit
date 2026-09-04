@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"github.com/vvb13a/goaudit/domain"
+	"github.com/vvb13a/goaudit/service"
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -36,7 +38,7 @@ const (
 	auditsListState auditsState = iota
 	auditsDeleteState
 	auditsRunningState
-	auditsPromptState
+	auditsFormState
 )
 
 // Panes of the split audits view.
@@ -46,12 +48,29 @@ const (
 	paneIssues
 )
 
+// auditOption mirrors one registry check in the audit run form.
+type auditOption struct {
+	name     string
+	category domain.Category
+	selected bool
+}
+
+// auditForm gathers the self-contained configuration of a new audit run:
+// a name, the target URLs and the checks to run.
+type auditForm struct {
+	name    textinput.Model
+	targets textarea.Model
+	options []auditOption
+	focus   int // 0 = name, 1 = targets, 2 = checks
+	cursor  int // index into options while checks are focused
+}
+
 type AuditsModel struct {
 	deps         Deps
 	state        auditsState
 	audits       []*domain.Audit
 	table        table.Model
-	prompt       textinput.Model
+	form         auditForm
 	progress     ProgressModel
 	progressCh   chan ProgressMsg
 	progressDone chan struct{}
@@ -272,8 +291,8 @@ func (m AuditsModel) Update(msg tea.Msg) (AuditsModel, tea.Cmd) {
 		return m.updateSplit(msg)
 	case auditsDeleteState:
 		return m.updateDelete(msg)
-	case auditsPromptState:
-		return m.updatePrompt(msg)
+	case auditsFormState:
+		return m.updateForm(msg)
 	}
 	return m, nil
 }
@@ -282,7 +301,7 @@ func (m AuditsModel) Update(msg tea.Msg) (AuditsModel, tea.Cmd) {
 
 // updateSplit routes keys to the focused pane. Left/right move the focus
 // across the audits, reports and issues panes; the panes stay in sync with
-// the selected audit/report. Audit-level actions (adhoc run, rerun, delete,
+// the selected audit/report. Audit-level actions (new audit, rerun, delete,
 // export) are available while the audits pane is focused.
 func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	if m.issueDetailOpen {
@@ -299,13 +318,8 @@ func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
 			return m, tea.Quit
 		case "n":
 			if m.focusPane == paneAudits {
-				ti := textinput.New()
-				ti.Placeholder = "https://example.com/page"
-				ti.CharLimit = 2048
-				ti.Width = 60
-				ti.Focus()
-				m.prompt = ti
-				m.state = auditsPromptState
+				m.form = newAuditForm(m.deps.Registry)
+				m.state = auditsFormState
 			}
 			return m, nil
 		case "r":
@@ -319,7 +333,7 @@ func (m AuditsModel) updateSplit(msg tea.Msg) (AuditsModel, tea.Cmd) {
 			if m.focusPane == paneAudits {
 				if sel := m.selAudit(); sel != nil {
 					m.deleteID = sel.ID
-					m.deleteName = sel.PlanName
+					m.deleteName = sel.Name
 					m.state = auditsDeleteState
 				}
 			}
@@ -446,69 +460,191 @@ func (m AuditsModel) currentReport() *domain.Report {
 
 // ---- Other states ----
 
-func (m AuditsModel) updatePrompt(msg tea.Msg) (AuditsModel, tea.Cmd) {
+// newAuditForm builds the run form with every registered check preselected.
+func newAuditForm(registry *service.CheckRegistry) auditForm {
+	ti := textinput.New()
+	ti.Placeholder = "e.g. Marketing Site Audit"
+	ti.CharLimit = 80
+	ti.Width = 50
+	ti.Focus()
+
+	ta := textarea.New()
+	ta.Placeholder = "https://example.com\nhttps://example.com/pricing"
+	ta.CharLimit = 8192
+	ta.SetWidth(50)
+	ta.SetHeight(6)
+
+	var options []auditOption
+	for _, c := range registry.All() {
+		options = append(options, auditOption{
+			name:     c.Info().Name,
+			category: c.Info().Category,
+			selected: true,
+		})
+	}
+
+	return auditForm{
+		name:    ti,
+		targets: ta,
+		options: options,
+		focus:   0,
+	}
+}
+
+func (m AuditsModel) updateForm(msg tea.Msg) (AuditsModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc":
 			m.state = auditsListState
 			return m, nil
+		case "tab", "shift+tab", "backtab":
+			m.form.focus = (m.form.focus + 1) % 3
+			switch m.form.focus {
+			case 0:
+				m.form.name.Focus()
+				m.form.targets.Blur()
+			case 1:
+				m.form.name.Blur()
+				m.form.targets.Focus()
+			default:
+				m.form.name.Blur()
+				m.form.targets.Blur()
+			}
+			return m, nil
+		case "ctrl+s":
+			return m.submitAuditForm()
 		case "enter":
-			raw := strings.TrimSpace(m.prompt.Value())
-			if raw == "" {
-				return m, NotifyDanger("Enter a URL to audit")
+			if m.form.focus == 2 {
+				return m.submitAuditForm()
 			}
-			if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
-				raw = "https://" + raw
+		case "up", "k", "down", "j", " ":
+			// List navigation and toggling only apply while the checks list
+			// is focused; anywhere else the keys reach the focused widget
+			// (e.g. typing "k" or a space in the name or targets fields).
+			if m.form.focus == 2 {
+				switch msg.String() {
+				case "up", "k":
+					if m.form.cursor > 0 {
+						m.form.cursor--
+					}
+				case "down", "j":
+					if m.form.cursor < len(m.form.options)-1 {
+						m.form.cursor++
+					}
+				case " ":
+					if len(m.form.options) > 0 {
+						opt := &m.form.options[m.form.cursor]
+						opt.selected = !opt.selected
+					}
+				}
+				return m, nil
 			}
-			plan := &domain.Plan{Name: "Ad-hoc Run", URLs: []string{raw}}
-			return m.startRun(plan, "Ad-hoc Run")
 		}
 	}
 
 	var cmd tea.Cmd
-	m.prompt, cmd = m.prompt.Update(msg)
+	switch m.form.focus {
+	case 0:
+		m.form.name, cmd = m.form.name.Update(msg)
+	case 1:
+		m.form.targets, cmd = m.form.targets.Update(msg)
+	}
 	return m, cmd
 }
 
-func (m AuditsModel) startRerun(a *domain.Audit) (AuditsModel, tea.Cmd) {
-	plan := &domain.Plan{Name: a.PlanName}
-
-	if a.PlanID != "" {
-		if existing, err := m.deps.PlanService.GetByID(context.Background(), a.PlanID); err == nil {
-			plan = existing
-		}
+// submitAuditForm validates the form, resolves the chosen checks and starts
+// the audit run.
+func (m AuditsModel) submitAuditForm() (AuditsModel, tea.Cmd) {
+	name := strings.TrimSpace(m.form.name.Value())
+	if name == "" {
+		return m, NotifyDanger("Audit name is required")
 	}
 
-	if len(plan.URLs) == 0 {
+	var targets []string
+	seen := make(map[string]struct{})
+	for _, line := range strings.Split(m.form.targets.Value(), "\n") {
+		u := strings.TrimSpace(line)
+		if u == "" {
+			continue
+		}
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			u = "https://" + u
+		}
+		if _, exists := seen[u]; exists {
+			continue
+		}
+		seen[u] = struct{}{}
+		targets = append(targets, u)
+	}
+	if len(targets) == 0 {
+		return m, NotifyDanger("Add at least one target URL")
+	}
+
+	var chosen []string
+	for _, opt := range m.form.options {
+		if opt.selected {
+			chosen = append(chosen, opt.name)
+		}
+	}
+	if len(chosen) == 0 {
+		return m, NotifyDanger("Select at least one check")
+	}
+
+	checks, err := m.deps.Registry.Resolve(chosen)
+	if err != nil {
+		return m, NotifyDanger(fmt.Sprintf("Cannot run audit: %v", err))
+	}
+
+	return m.startAuditRun(name, targets, checks, fmt.Sprintf("Running audit '%s'", name))
+}
+
+// startRerun launches a new audit from the configuration stored on an
+// existing one. Audits created before run configuration was stored inline
+// fall back to the URLs of their previous reports and to all checks.
+func (m AuditsModel) startRerun(a *domain.Audit) (AuditsModel, tea.Cmd) {
+	name := a.Name
+	targets := a.Targets
+	checkNames := a.CheckNames
+
+	if len(targets) == 0 || len(checkNames) == 0 {
 		full, err := m.deps.AuditService.GetByID(context.Background(), a.ID)
 		if err != nil {
 			return m, NotifyDanger(fmt.Sprintf("Cannot rerun audit: %v", err))
 		}
-		for _, rep := range full.Reports {
-			plan.URLs = append(plan.URLs, rep.URL)
+		if len(targets) == 0 {
+			for _, rep := range full.Reports {
+				targets = append(targets, rep.URL)
+			}
 		}
-		if len(plan.URLs) == 0 {
-			return m, NotifyDanger("Cannot rerun audit: no target URLs found")
+		if len(checkNames) == 0 {
+			for _, c := range m.deps.Registry.All() {
+				checkNames = append(checkNames, c.Info().Name)
+			}
 		}
 	}
+	if len(targets) == 0 {
+		return m, NotifyDanger("Cannot rerun audit: no target URLs found")
+	}
 
-	return m.startRun(plan, fmt.Sprintf("Rerunning '%s'", a.PlanName))
+	checks, err := m.deps.Registry.Resolve(checkNames)
+	if err != nil {
+		return m, NotifyDanger(fmt.Sprintf("Cannot rerun audit: %v", err))
+	}
+
+	return m.startAuditRun(name, targets, checks, fmt.Sprintf("Rerunning '%s'", name))
 }
 
-func (m AuditsModel) startRun(plan *domain.Plan, title string) (AuditsModel, tea.Cmd) {
-	checklist, checks, err := prepareRun(m.deps)
-	if err != nil {
-		return m, NotifyDanger(err.Error())
-	}
-
+// startAuditRun launches the run: the audits view switches to its progress
+// state and the runner executes every check against each target.
+func (m AuditsModel) startAuditRun(name string, targets []string, checks []domain.Check, title string) (AuditsModel, tea.Cmd) {
 	m.state = auditsRunningState
 	m.progress = m.progress.Start(title, m.width)
 	m.progressCh = make(chan ProgressMsg, 16)
 	m.progressDone = make(chan struct{})
 
 	return m, tea.Batch(
-		newRunCmd(m.deps, plan, checklist, checks, AuditsView, AuditsView, m.progressCh, m.progressDone),
+		newRunCmd(m.deps, name, targets, checks, AuditsView, m.progressCh, m.progressDone),
 		newProgressWaitCmd(m.progressCh, m.progressDone),
 	)
 }
@@ -568,8 +704,8 @@ func (m AuditsModel) View() string {
 		return overlay(m.contentView(), m.deleteView(), m.width, m.height)
 	case auditsRunningState:
 		return m.progress.View()
-	case auditsPromptState:
-		return overlay(m.contentView(), m.promptView(), m.width, m.height)
+	case auditsFormState:
+		return overlay(m.contentView(), m.formView(), m.width, m.height)
 	}
 	return ""
 }
@@ -579,7 +715,7 @@ func (m AuditsModel) listView() string {
 		return "Loading audits..."
 	}
 	if len(m.audits) == 0 {
-		return "No audits yet. Press 'n' to audit a single URL or run a plan."
+		return "No audits yet. Press 'n' to run a new audit."
 	}
 	return m.table.View()
 }
@@ -599,7 +735,7 @@ func (m AuditsModel) splitView() string {
 	if !m.loaded {
 		leftContent = "Loading audits..."
 	} else if len(m.audits) == 0 {
-		leftContent = "No audits yet. Press 'n' to audit a URL."
+		leftContent = "No audits yet. Press 'n' to run a new audit."
 	}
 
 	left := m.paneView(leftContent, innerW, boxH-2)
@@ -834,11 +970,43 @@ func (m AuditsModel) deleteView() string {
 	return fmt.Sprintf("Delete audit '%s'? This cannot be undone.", m.deleteName)
 }
 
-func (m AuditsModel) promptView() string {
+// formView renders the fields of the new-audit run form: a name, one target
+// URL per line and the checks to run.
+func (m AuditsModel) formView() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Audit a single URL"))
+	b.WriteString(titleStyle.Render("Run a New Audit"))
 	b.WriteString("\n\n")
-	b.WriteString("URL: " + m.prompt.View())
+
+	nameLabel := "Name:"
+	if m.form.focus == 0 {
+		nameLabel = labelStyle.Render("Name:")
+	}
+	b.WriteString(nameLabel + "\n" + m.form.name.View() + "\n\n")
+
+	targetsLabel := "Target URLs (one per line):"
+	if m.form.focus == 1 {
+		targetsLabel = labelStyle.Render("Target URLs (one per line):")
+	}
+	b.WriteString(targetsLabel + "\n" + m.form.targets.View() + "\n\n")
+
+	checksLabel := "Checks (Space to toggle):"
+	if m.form.focus == 2 {
+		checksLabel = labelStyle.Render("Checks (Space to toggle):")
+	}
+	b.WriteString(checksLabel + "\n")
+
+	for i, opt := range m.form.options {
+		cursor := "  "
+		if m.form.focus == 2 && m.form.cursor == i {
+			cursor = labelStyle.Render("> ")
+		}
+		checked := "[ ]"
+		if opt.selected {
+			checked = labelStyle.Render("[x]")
+		}
+		cat := helpStyle.Render(string(opt.category))
+		b.WriteString(fmt.Sprintf("%s%s %-25s %s\n", cursor, checked, opt.name, cat))
+	}
 	return b.String()
 }
 
@@ -848,15 +1016,15 @@ func (m AuditsModel) Help() string {
 		return "y: Delete  •  any other key: Cancel"
 	case auditsRunningState:
 		return "Audit in progress  •  Ctrl+C: Quit"
-	case auditsPromptState:
-		return "Enter: Run  •  Esc: Cancel"
+	case auditsFormState:
+		return "Tab: Switch  •  Space: Toggle  •  Ctrl+S: Run  •  Esc: Cancel"
 	case auditsListState:
 		if m.issueDetailOpen {
 			return "Esc: Close Details  •  q: Quit"
 		}
 		switch m.focusPane {
 		case paneAudits:
-			return "→: Reports  •  ↑/↓: Audit  •  n: URL Audit  •  r: Rerun  •  e: Excel  •  w: HTML  •  d: Delete  •  q: Quit"
+			return "→: Reports  •  ↑/↓: Audit  •  n: New Audit  •  r: Rerun  •  e: Excel  •  w: HTML  •  d: Delete  •  q: Quit"
 		case paneReports:
 			return "←: Audits  •  →: Issues  •  ↑/↓: Report  •  o: Open in Browser  •  q: Quit"
 		default:
@@ -876,22 +1044,22 @@ func (m *AuditsModel) rebuildAuditsTable() {
 	}
 
 	// Column widths never shrink below the length of their header label so
-	// titles are never clipped. The plan column absorbs the spare width.
+	// titles are never clipped. The name column absorbs the spare width.
 	sevW := 8 // "Severity"
 	durW := 8 // "Duration"
 	startedW := 14
-	planW := tableWidth - sevW - durW - startedW
-	if planW < 8 {
+	nameW := tableWidth - sevW - durW - startedW
+	if nameW < 8 {
 		// Not enough room: fall back to compact relative times ("3h ago").
 		startedW = 8
-		planW = tableWidth - sevW - durW - startedW
-		if planW < 8 {
+		nameW = tableWidth - sevW - durW - startedW
+		if nameW < 8 {
 			// Still tight: drop the duration column entirely.
 			durW = 0
-			planW = tableWidth - sevW - startedW
-			if planW < 8 {
-				planW = 8
-				startedW = tableWidth - sevW - planW
+			nameW = tableWidth - sevW - startedW
+			if nameW < 8 {
+				nameW = 8
+				startedW = tableWidth - sevW - nameW
 				if startedW < 5 {
 					startedW = 5
 				}
@@ -901,7 +1069,7 @@ func (m *AuditsModel) rebuildAuditsTable() {
 
 	short := startedW < 14
 	columns := []table.Column{
-		{Title: "Plan", Width: planW},
+		{Title: "Name", Width: nameW},
 		{Title: "Started", Width: startedW},
 	}
 	if durW > 0 {
@@ -911,7 +1079,7 @@ func (m *AuditsModel) rebuildAuditsTable() {
 
 	rows := make([]table.Row, 0, len(m.audits))
 	for _, a := range m.audits {
-		row := table.Row{clipCell(a.PlanName, planW-1), timeAgo(a.StartedAt, short)}
+		row := table.Row{clipCell(a.Name, nameW-1), timeAgo(a.StartedAt, short)}
 		if durW > 0 {
 			row = append(row, a.Duration.Round(time.Second).String())
 		}

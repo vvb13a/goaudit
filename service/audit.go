@@ -68,9 +68,6 @@ func (s *AuditService) GetByID(ctx context.Context, id string) (*domain.Audit, e
 func (s *AuditService) List(ctx context.Context, filter domain.AuditFilter) ([]*domain.Audit, error) {
 	query := s.db.WithContext(ctx).Model(&store.Audit{}).Order("started_at DESC")
 
-	if filter.PlanID != nil && *filter.PlanID != "" {
-		query = query.Where("plan_id = ?", *filter.PlanID)
-	}
 	if filter.HighestSeverity != nil && filter.HighestSeverity.IsValid() {
 		query = query.Where("highest_severity = ?", string(*filter.HighestSeverity))
 	}

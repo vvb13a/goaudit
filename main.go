@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -49,23 +48,16 @@ func main() {
 	// 4. Application Services (GORM persistence)
 	excelService := service.NewExcelService("data/excel")
 	htmlService := service.NewHtmlService("data/html")
-	planService := service.NewPlanService(db)
-	checklistService := service.NewChecklistService(db, registry)
 	auditService := service.NewAuditService(db, excelService, htmlService)
 
-	// 5. Seed Default Active Checklist if first run
-	checklistService.SeedDefault(context.Background())
-
-	// 6. Launch TUI
+	// 5. Launch TUI
 	app := tui.New(tui.Deps{
-		ConfigManager:    cfgManager,
-		Registry:         registry,
-		Runner:           runner,
-		PlanService:      planService,
-		ChecklistService: checklistService,
-		AuditService:     auditService,
-		ExcelService:     excelService,
-		HtmlService:      htmlService,
+		ConfigManager: cfgManager,
+		Registry:      registry,
+		Runner:        runner,
+		AuditService:  auditService,
+		ExcelService:  excelService,
+		HtmlService:   htmlService,
 	})
 
 	program := tea.NewProgram(app, tea.WithAltScreen())

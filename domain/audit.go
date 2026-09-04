@@ -47,16 +47,18 @@ func (r *Report) CalculateSummary() {
 	}
 }
 
+// Audit is a self-contained record of one audit run: it carries the run
+// configuration (Name, Targets and CheckNames) inline instead of referencing
+// reusable plans or checklists.
 type Audit struct {
-	ID            string        `json:"id"`
-	PlanID        string        `json:"plan_id,omitempty"`
-	PlanName      string        `json:"plan_name"`
-	ChecklistID   string        `json:"checklist_id,omitempty"`
-	ChecklistName string        `json:"checklist_name"`
-	StartedAt     time.Time     `json:"started_at"`
-	Duration      time.Duration `json:"duration"`
-	Summary       Summary       `json:"summary"`
-	Reports       []*Report     `json:"reports"`
+	ID         string        `json:"id"`
+	Name       string        `json:"name"`
+	Targets    []string      `json:"targets"`
+	CheckNames []string      `json:"check_names"`
+	StartedAt  time.Time     `json:"started_at"`
+	Duration   time.Duration `json:"duration"`
+	Summary    Summary       `json:"summary"`
+	Reports    []*Report     `json:"reports"`
 }
 
 func (a *Audit) CalculateSummary() {
@@ -81,7 +83,6 @@ func (a *Audit) CalculateSummary() {
 }
 
 type AuditFilter struct {
-	PlanID          *string
 	HighestSeverity *Severity
 	Limit           int
 	Offset          int

@@ -166,8 +166,9 @@ func (s *ExcelService) build(a *domain.Audit) (f *excelize.File, err error) {
 
 func (s *ExcelService) writeSummary(f *excelize.File, a *domain.Audit, titleStyle, labelStyle int) error {
 	meta := [][2]string{
-		{"Plan", a.PlanName},
-		{"Checklist", a.ChecklistName},
+		{"Name", a.Name},
+		{"Targets", fmt.Sprintf("%d URL(s)", len(a.Targets))},
+		{"Checks", fmt.Sprintf("%d", len(a.CheckNames))},
 		{"Audit ID", a.ID},
 		{"Started", formatTimestamp(a.StartedAt)},
 		{"Duration", a.Duration.Round(time.Millisecond).String()},
@@ -175,7 +176,7 @@ func (s *ExcelService) writeSummary(f *excelize.File, a *domain.Audit, titleStyl
 		{"Failed endpoints", fmt.Sprintf("%d", a.Summary.FailedCount)},
 	}
 
-	if err := f.SetCellValue(sheetSummary, "A1", "Audit: "+a.PlanName); err != nil {
+	if err := f.SetCellValue(sheetSummary, "A1", "Audit: "+a.Name); err != nil {
 		return err
 	}
 	if err := f.SetCellStyle(sheetSummary, "A1", "B1", titleStyle); err != nil {

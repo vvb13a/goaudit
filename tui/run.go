@@ -2,58 +2,43 @@ package tui
 
 import (
 	"context"
-	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/vvb13a/goaudit/domain"
 )
 
-// prepareRun fetches the currently active checklist and resolves its checks
-// so an audit run can be started.
-func prepareRun(deps Deps) (*domain.Checklist, []domain.Check, error) {
-	checklist, err := deps.ChecklistService.GetActive(context.Background())
-	if err != nil {
-		return nil, nil, fmt.Errorf("fetch active checklist: %w", err)
-	}
-	checks, err := deps.Registry.Resolve(checklist.CheckNames)
-	if err != nil {
-		return nil, nil, fmt.Errorf("resolve checklist checks: %w", err)
-	}
-	return checklist, checks, nil
-}
-
-// newRunCmd executes an audit plan through the runner and persists the
-// resulting audit. Progress events are pushed onto prog; the done channel is
-// closed when the run finishes, so progress waiters can stop.
+// newRunCmd executes an audit through the runner and persists the resulting
+// audit. Progress events are pushed onto prog; the done channel is closed
+// when the run finishes, so progress waiters can stop.
 func newRunCmd(
 	deps Deps,
-	plan *domain.Plan,
-	checklist *domain.Checklist,
+	name string,
+	targets []string,
 	checks []domain.Check,
-	owner, target ViewID,
+	target ViewID,
 	prog chan<- ProgressMsg,
 	done chan struct{},
 ) tea.Cmd {
 	return func() tea.Msg {
 		defer close(done)
 
-		audit, err := deps.Runner.ExecutePlan(
+		audit, err := deps.Runner.ExecuteAudit(
 			context.Background(),
-			plan,
-			checklist,
+			name,
+			targets,
 			checks,
 			func(url string, completed, total int) {
 				prog <- ProgressMsg{CurrentURL: url, Completed: completed, Total: total}
 			},
 		)
 		if err != nil {
-			return runCompleteMsg{owner: owner, target: target, title: plan.Name, err: err}
+			return runCompleteMsg{target: target, title: name, err: err}
 		}
 		if err := deps.AuditService.Create(context.Background(), audit); err != nil {
-			return runCompleteMsg{owner: owner, target: target, audit: audit, title: plan.Name, err: err}
+			return runCompleteMsg{target: target, audit: audit, title: name, err: err}
 		}
-		return runCompleteMsg{owner: owner, target: target, audit: audit, title: plan.Name}
+		return runCompleteMsg{target: target, audit: audit, title: name}
 	}
 }
 

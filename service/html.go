@@ -188,7 +188,7 @@ function fmtTS(iso) {
 }
 
 function page() {
-  var data = {plan_name: 'Unknown', reports: []};
+  var data = {name: 'Unknown', reports: []};
   var el = document.getElementById('audit-data');
   if (el) {
     try { data = JSON.parse(el.textContent); } catch (e) { console.error('Failed to parse audit data', e); }
@@ -360,8 +360,8 @@ function page() {
           </div>
           <div>
             <div class="flex items-center gap-2">
-              <span class="font-bold text-white tracking-tight" x-text="audit.plan_name || 'GoAudit Report'"></span>
-              <span class="text-[10px] font-mono uppercase bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-1.5 py-0.5 rounded font-semibold" x-text="audit.checklist_name || 'Audit'"></span>
+              <span class="font-bold text-white tracking-tight" x-text="audit.name || 'GoAudit Report'"></span>
+              <span class="text-[10px] font-mono uppercase bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-1.5 py-0.5 rounded font-semibold" x-text="(audit.check_names || []).length + ' checks'"></span>
             </div>
             <span class="text-xs text-slate-400 font-mono" x-text="'ID: ' + audit.id"></span>
           </div>

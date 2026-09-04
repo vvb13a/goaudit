@@ -21,7 +21,6 @@ type ProgressMsg struct {
 // root model, which restores the initiating view, refreshes the audits list
 // and navigates to the requested tab.
 type runCompleteMsg struct {
-	owner  ViewID
 	target ViewID
 	audit  *domain.Audit
 	title  string
@@ -29,7 +28,7 @@ type runCompleteMsg struct {
 }
 
 // ProgressModel is a standalone model rendering the state of an audit run:
-// the plan being executed, the URL currently being audited, a progress bar
+// the audit being executed, the URL currently being audited, a progress bar
 // and completion counts.
 type ProgressModel struct {
 	bar        progress.Model

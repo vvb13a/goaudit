@@ -6,83 +6,15 @@ import (
 	"github.com/vvb13a/goaudit/domain"
 )
 
-// Plan mirrors the "plans" table. URLs are stored as a JSON-encoded text column.
-type Plan struct {
-	ID        string    `gorm:"column:id;primaryKey;type:text"`
-	Name      string    `gorm:"column:name;type:text;not null"`
-	URLs      []string  `gorm:"column:urls;type:text;not null;serializer:json"`
-	CreatedAt time.Time `gorm:"column:created_at"`
-	UpdatedAt time.Time `gorm:"column:updated_at"`
-}
-
-func (Plan) TableName() string { return "plans" }
-
-func PlanModel(p *domain.Plan) *Plan {
-	return &Plan{
-		ID:        p.ID,
-		Name:      p.Name,
-		URLs:      p.URLs,
-		CreatedAt: p.CreatedAt,
-		UpdatedAt: p.UpdatedAt,
-	}
-}
-
-func (m *Plan) ToDomain() *domain.Plan {
-	return &domain.Plan{
-		ID:        m.ID,
-		Name:      m.Name,
-		URLs:      m.URLs,
-		CreatedAt: m.CreatedAt,
-		UpdatedAt: m.UpdatedAt,
-	}
-}
-
-// Checklist mirrors the "checklists" table. CheckNames are stored as a
-// JSON-encoded text column.
-type Checklist struct {
-	ID          string    `gorm:"column:id;primaryKey;type:text"`
-	Name        string    `gorm:"column:name;type:text;not null"`
-	Description string    `gorm:"column:description;type:text;not null;default:''"`
-	CheckNames  []string  `gorm:"column:check_names;type:text;not null;serializer:json"`
-	IsActive    bool      `gorm:"column:is_active;index:idx_checklists_is_active;not null;default:false"`
-	CreatedAt   time.Time `gorm:"column:created_at"`
-	UpdatedAt   time.Time `gorm:"column:updated_at"`
-}
-
-func (Checklist) TableName() string { return "checklists" }
-
-func ChecklistModel(c *domain.Checklist) *Checklist {
-	return &Checklist{
-		ID:          c.ID,
-		Name:        c.Name,
-		Description: c.Description,
-		CheckNames:  c.CheckNames,
-		IsActive:    c.IsActive,
-		CreatedAt:   c.CreatedAt,
-		UpdatedAt:   c.UpdatedAt,
-	}
-}
-
-func (m *Checklist) ToDomain() *domain.Checklist {
-	return &domain.Checklist{
-		ID:          m.ID,
-		Name:        m.Name,
-		Description: m.Description,
-		CheckNames:  m.CheckNames,
-		IsActive:    m.IsActive,
-		CreatedAt:   m.CreatedAt,
-		UpdatedAt:   m.UpdatedAt,
-	}
-}
-
-// Audit mirrors the "audits" table. PlanID and ChecklistID are nullable and
-// reference no FK constraint; names are denormalized snapshots.
+// Audit mirrors the "audits" table. Audits are self-contained: the run
+// configuration (Name, Targets and CheckNames) is stored inline. Name reuses
+// the legacy "plan_name" column so audits created before the refactor keep
+// their label; Targets and CheckNames are JSON-encoded text columns.
 type Audit struct {
 	ID              string    `gorm:"column:id;primaryKey;type:text"`
-	PlanID          *string   `gorm:"column:plan_id;index:idx_audits_plan_id"`
-	PlanName        string    `gorm:"column:plan_name;type:text;not null"`
-	ChecklistID     *string   `gorm:"column:checklist_id"`
-	ChecklistName   string    `gorm:"column:checklist_name;type:text;not null"`
+	Name            string    `gorm:"column:plan_name;type:text;not null"`
+	Targets         []string  `gorm:"column:targets;type:text;not null;default:'[]';serializer:json"`
+	CheckNames      []string  `gorm:"column:check_names;type:text;not null;default:'[]';serializer:json"`
 	StartedAt       time.Time `gorm:"column:started_at;index:idx_audits_started_at,sort:desc"`
 	DurationMs      int64     `gorm:"column:duration_ms"`
 	TotalEndpoints  int64     `gorm:"column:total_endpoints"`
@@ -97,10 +29,9 @@ func (Audit) TableName() string { return "audits" }
 func AuditModel(a *domain.Audit) *Audit {
 	return &Audit{
 		ID:              a.ID,
-		PlanID:          optionalString(a.PlanID),
-		PlanName:        a.PlanName,
-		ChecklistID:     optionalString(a.ChecklistID),
-		ChecklistName:   a.ChecklistName,
+		Name:            a.Name,
+		Targets:         a.Targets,
+		CheckNames:      a.CheckNames,
 		StartedAt:       a.StartedAt,
 		DurationMs:      a.Duration.Milliseconds(),
 		TotalEndpoints:  int64(a.Summary.TotalCount),
@@ -113,13 +44,12 @@ func AuditModel(a *domain.Audit) *Audit {
 
 func (m *Audit) ToDomain() *domain.Audit {
 	return &domain.Audit{
-		ID:            m.ID,
-		PlanID:        valueOrEmpty(m.PlanID),
-		PlanName:      m.PlanName,
-		ChecklistID:   valueOrEmpty(m.ChecklistID),
-		ChecklistName: m.ChecklistName,
-		StartedAt:     m.StartedAt,
-		Duration:      time.Duration(m.DurationMs) * time.Millisecond,
+		ID:         m.ID,
+		Name:       m.Name,
+		Targets:    m.Targets,
+		CheckNames: m.CheckNames,
+		StartedAt:  m.StartedAt,
+		Duration:   time.Duration(m.DurationMs) * time.Millisecond,
 		Summary: domain.Summary{
 			TotalCount:      int(m.TotalEndpoints),
 			PassedCount:     int(m.PassedCount),
@@ -182,18 +112,4 @@ func (m *Report) ToDomain() *domain.Report {
 		},
 		Issues: m.Issues,
 	}
-}
-
-func optionalString(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
-
-func valueOrEmpty(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }

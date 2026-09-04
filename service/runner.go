@@ -44,14 +44,17 @@ func NewRunner(fetcher *Fetcher, cfg RunnerConfig) *Runner {
 	}
 }
 
-func (r *Runner) ExecutePlan(
+// ExecuteAudit runs every check against each resolved target and returns the
+// resulting audit. The audit is self-contained: it stores the given name, the
+// targets as entered and the names of the checks that ran.
+func (r *Runner) ExecuteAudit(
 	ctx context.Context,
-	plan *domain.Plan,
-	checklist *domain.Checklist,
+	name string,
+	targets []string,
 	checks []domain.Check,
 	onProgress ProgressCallback,
 ) (*domain.Audit, error) {
-	resolvedURLs, err := r.ResolveURLs(ctx, plan.URLs)
+	resolvedURLs, err := r.ResolveURLs(ctx, targets)
 	if err != nil {
 		return nil, fmt.Errorf("resolve targets: %w", err)
 	}
@@ -61,14 +64,17 @@ func (r *Runner) ExecutePlan(
 		return nil, fmt.Errorf("no target URLs found to audit")
 	}
 
+	if name == "" {
+		name = "Audit"
+	}
+
 	audit := &domain.Audit{
-		ID:            fmt.Sprintf("aud_%d", time.Now().UnixNano()),
-		PlanID:        plan.ID,
-		PlanName:      plan.Name,
-		ChecklistID:   checklist.ID,
-		ChecklistName: checklist.Name,
-		StartedAt:     time.Now().UTC(),
-		Reports:       make([]*domain.Report, total),
+		ID:         fmt.Sprintf("aud_%d", time.Now().UnixNano()),
+		Name:       name,
+		Targets:    targets,
+		CheckNames: checkNames(checks),
+		StartedAt:  time.Now().UTC(),
+		Reports:    make([]*domain.Report, total),
 	}
 
 	if onProgress != nil {
@@ -129,6 +135,15 @@ func (r *Runner) ExecutePlan(
 	audit.CalculateSummary()
 
 	return audit, nil
+}
+
+// checkNames returns the names of the given checks in order.
+func checkNames(checks []domain.Check) []string {
+	names := make([]string, 0, len(checks))
+	for _, c := range checks {
+		names = append(names, c.Info().Name)
+	}
+	return names
 }
 
 func (r *Runner) AuditURL(ctx context.Context, targetURL string, checks []domain.Check) *domain.Report {
