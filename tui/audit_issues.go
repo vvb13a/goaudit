@@ -497,13 +497,22 @@ func (m *AuditIssuesModel) rebuildTable() {
 	}
 
 	rows := make([]table.Row, 0, len(visible))
+
+	// When every listed URL shares one host, show only the path so the
+	// repeated domain does not eat the URL column.
+	urls := make([]string, 0, len(visible))
+	for _, row := range visible {
+		urls = append(urls, row.url)
+	}
+	host, shared := sharedHost(urls)
+
 	for _, row := range visible {
 		rows = append(rows, table.Row{
 			string(row.issue.Severity),
 			lifecycleLabel(row.issue.Lifecycle),
 			clipCell(row.issue.CheckName, checkW-1),
 			clipCell(row.issue.Category.DisplayName(), catW-1),
-			clipCell(row.url, urlW-1),
+			clipCell(displayURL(row.url, host, shared), urlW-1),
 			clipCell(row.issue.Message, msgW-1),
 		})
 	}

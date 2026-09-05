@@ -622,16 +622,16 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%.1fs", d.Seconds())
 }
 
-// commonHost returns the host shared by every URL of the list and whether
+// sharedHost returns the host shared by every URL of the list and whether
 // they all agree on it. Lists with fewer than two entries or unparsable
 // URLs never share a host.
-func commonHost(urls []*domain.AuditedUrl) (host string, shared bool) {
+func sharedHost(urls []string) (host string, shared bool) {
 	if len(urls) < 2 {
 		return "", false
 	}
 	var common string
-	for _, u := range urls {
-		parsed, err := url.Parse(u.URL)
+	for _, raw := range urls {
+		parsed, err := url.Parse(raw)
 		if err != nil || parsed.Host == "" {
 			return "", false
 		}
@@ -643,6 +643,16 @@ func commonHost(urls []*domain.AuditedUrl) (host string, shared bool) {
 		}
 	}
 	return common, true
+}
+
+// commonHost returns the host shared by every audited URL of the list, if
+// any.
+func commonHost(urls []*domain.AuditedUrl) (host string, shared bool) {
+	raw := make([]string, len(urls))
+	for i, u := range urls {
+		raw[i] = u.URL
+	}
+	return sharedHost(raw)
 }
 
 // displayURL shortens a URL to its path when every URL of the audit shares
