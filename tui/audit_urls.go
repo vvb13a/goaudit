@@ -137,11 +137,21 @@ func (m AuditUrlsModel) Update(msg tea.Msg) (AuditUrlsModel, tea.Cmd) {
 	var cmd tea.Cmd
 	switch m.focusPane {
 	case paneUrls:
-		if key, ok := msg.(tea.KeyMsg); ok && key.String() == "o" {
-			if u := m.selURL(); u != nil && u.URL != "" {
-				return m, openInBrowserCmd(u.URL)
+		if key, ok := msg.(tea.KeyMsg); ok {
+			switch key.String() {
+			case "o":
+				if u := m.selURL(); u != nil && u.URL != "" {
+					return m, openInBrowserCmd(u.URL)
+				}
+				return m, nil
+			case "r":
+				// Re-run the checks of the selected URL without a full audit
+				// run: no snapshot is recorded.
+				if u := m.selURL(); u != nil && u.URL != "" {
+					return m, recheckURLCmd(m.deps, m.auditID, u.URL)
+				}
+				return m, nil
 			}
-			return m, nil
 		}
 		before := m.urlTable.Cursor()
 		m.urlTable, cmd = m.urlTable.Update(msg)
@@ -394,7 +404,7 @@ func (m AuditUrlsModel) Help() string {
 	}
 	switch m.focusPane {
 	case paneUrls:
-		return "→: Issues  •  ↑/↓: URL  •  o: Open in Browser  •  Ctrl+O: Audits  •  q: Quit"
+		return "→: Issues  •  ↑/↓: URL  •  r: Recheck URL  •  o: Open in Browser  •  Ctrl+O: Audits  •  q: Quit"
 	default:
 		return "←: URLs  •  ↑/↓: Issue  •  Ctrl+O: Audits  •  q: Quit"
 	}

@@ -123,6 +123,13 @@ func (m AuditIssuesModel) Update(msg tea.Msg) (AuditIssuesModel, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "r":
+			// Re-run the checks of the audited URL of the selected issue
+			// without a full audit run: no snapshot is recorded.
+			if row := m.selRow(); row != nil && row.url != "" {
+				return m, recheckURLCmd(m.deps, m.auditID, row.url)
+			}
+			return m, nil
 		}
 	}
 
@@ -568,5 +575,5 @@ func (m AuditIssuesModel) Help() string {
 	if m.auditID == "" {
 		return "Ctrl+O: Audits"
 	}
-	return "↑/↓: Issue  •  a: Toggle All  •  o: Open URL  •  Ctrl+O: Audits  •  q: Quit"
+	return "↑/↓: Issue  •  r: Recheck URL  •  a: Toggle All  •  o: Open URL  •  Ctrl+O: Audits  •  q: Quit"
 }

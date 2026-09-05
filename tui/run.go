@@ -74,3 +74,35 @@ func newProgressWaitCmd(prog <-chan ProgressMsg, done <-chan struct{}) tea.Cmd {
 		}
 	}
 }
+
+// urlRecheckedMsg reports the outcome of rechecking a single audited URL of
+// the current audit.
+type urlRecheckedMsg struct {
+	auditID string
+	url     string
+	err     error
+}
+
+// recheckURLCmd re-runs the audit's checks against one audited URL and
+// persists the result in place. Unlike a full run, a recheck never records
+// an audit snapshot, so the timeline stays untouched.
+func recheckURLCmd(deps Deps, auditID, targetURL string) tea.Cmd {
+	return func() tea.Msg {
+		audit, err := deps.AuditService.GetConfig(context.Background(), auditID)
+		if err != nil {
+			return urlRecheckedMsg{auditID: auditID, url: targetURL, err: err}
+		}
+		checks, err := deps.Registry.Resolve(audit.CheckNames)
+		if err != nil {
+			return urlRecheckedMsg{auditID: auditID, url: targetURL, err: err}
+		}
+		cfg := effectiveConfig(deps, audit.Config)
+
+		u, err := deps.Runner.AuditURL(context.Background(), targetURL, checks, cfg)
+		if err != nil {
+			return urlRecheckedMsg{auditID: auditID, url: targetURL, err: err}
+		}
+		err = deps.AuditService.ApplyURLRecheck(context.Background(), auditID, u)
+		return urlRecheckedMsg{auditID: auditID, url: targetURL, err: err}
+	}
+}

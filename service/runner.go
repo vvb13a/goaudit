@@ -22,6 +22,14 @@ func NewRunner() *Runner {
 	return &Runner{}
 }
 
+// fetcherFor builds the engine fetcher from an effective configuration.
+func fetcherFor(cfg Config) *Fetcher {
+	return NewFetcher().
+		WithTimeout(cfg.HTTPTimeout()).
+		WithUserAgent(cfg.UserAgent).
+		WithHeader("X-Audit-Engine", "true")
+}
+
 // ExecuteAudit runs every check against each resolved target and returns the
 // resulting audit. cfg is the effective configuration of the audit (already
 // resolved from the audit record over the app-level defaults). The audit is
@@ -45,10 +53,7 @@ func (r *Runner) ExecuteAudit(
 		maxDepth = 3
 	}
 
-	fetcher := NewFetcher().
-		WithTimeout(cfg.HTTPTimeout()).
-		WithUserAgent(cfg.UserAgent).
-		WithHeader("X-Audit-Engine", "true")
+	fetcher := fetcherFor(cfg)
 
 	resolvedURLs, err := r.resolveTargets(ctx, fetcher, maxDepth, targets)
 	if err != nil {
@@ -151,6 +156,22 @@ func checkNames(checks []domain.Check) []string {
 		names = append(names, c.Info().Name)
 	}
 	return names
+}
+
+// AuditURL is the per-URL unit of the engine: it runs the given checks
+// against a single concrete URL with the effective configuration and returns
+// the raw audited result (no lifecycle metadata or summary — the persistence
+// layer fills those). Targeted rechecks of one URL use it without resolving
+// or touching any other URL. A fetch failure surfaces as a fatal issue on
+// the result, not as an error.
+func (r *Runner) AuditURL(ctx context.Context, targetURL string, checks []domain.Check, cfg Config) (*domain.AuditedUrl, error) {
+	if targetURL == "" {
+		return nil, fmt.Errorf("cannot audit an empty URL")
+	}
+	if len(checks) == 0 {
+		return nil, fmt.Errorf("cannot audit a URL without checks")
+	}
+	return r.auditURL(ctx, fetcherFor(cfg), targetURL, checks), nil
 }
 
 // auditURL runs every check against a single resolved target. The resulting

@@ -157,6 +157,8 @@ func (m Model) activateCmd() tea.Cmd {
 
 	if m.tenantID != "" {
 		switch m.nav.Active() {
+		case DashboardView:
+			cmds = append(cmds, m.dashboard.loadCmd(m.tenantID))
 		case UrlsView:
 			cmds = append(cmds, m.auditUrls.loadCmd(m.tenantID))
 		case IssuesView:
@@ -331,6 +333,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleAuditConfigSaved(cm)
 	}
 
+	// A new audit was created without running it.
+	if am, ok := msg.(auditCreatedMsg); ok {
+		return m.handleAuditCreated(am)
+	}
+
+	// A single audited URL was rechecked.
+	if rm, ok := msg.(urlRecheckedMsg); ok {
+		return m.handleURLRechecked(rm)
+	}
+
 	// Tenants of the switcher.
 	if tm, ok := msg.(tenantsLoadedMsg); ok {
 		return m.handleTenantsLoaded(tm)
@@ -407,6 +419,67 @@ func (m Model) handleAuditConfigSaved(msg auditConfigSavedMsg) (tea.Model, tea.C
 	return m, m.loadTenantsCmd()
 }
 
+// handleAuditCreated promotes the freshly created audit to the current
+// tenant and points the dashboard at it. The audit is only configured — the
+// user starts its first run deliberately.
+func (m Model) handleAuditCreated(msg auditCreatedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		return m.pushNotification(Notification{
+			Kind: NotificationDanger,
+			Text: fmt.Sprintf("Failed to create audit: %v", msg.err),
+		}), nil
+	}
+
+	a := msg.audit
+	m = m.setTenant(a.ID, a.Name)
+	m.tenantPicked = true
+	m.nav = m.nav.Select(DashboardView)
+
+	var cmd tea.Cmd
+	m.dashboard, cmd = m.dashboard.openDetail(a.ID)
+
+	cmds := []tea.Cmd{m.loadTenantsCmd()}
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	return m.pushNotification(Notification{
+		Kind: NotificationSuccess,
+		Text: fmt.Sprintf("Audit '%s' created — run it with 'r' in the audit switcher", a.Name),
+	}), tea.Batch(cmds...)
+}
+
+// handleURLRechecked notifies about a single-URL recheck and refreshes the
+// views that reflect the new state. The timeline is intentionally not
+// reloaded: rechecks never record an audit snapshot.
+func (m Model) handleURLRechecked(msg urlRecheckedMsg) (tea.Model, tea.Cmd) {
+	var n Notification
+	if msg.err != nil {
+		n = Notification{Kind: NotificationDanger, Text: fmt.Sprintf("Recheck failed for %s: %v", msg.url, msg.err)}
+	} else {
+		n = Notification{Kind: NotificationSuccess, Text: fmt.Sprintf("Rechecked %s", msg.url)}
+	}
+	m = m.pushNotification(n)
+
+	var cmds []tea.Cmd
+	if msg.auditID != "" && msg.auditID == m.tenantID {
+		cmds = append(cmds, m.dashboard.loadCmd(m.tenantID))
+		switch m.nav.Active() {
+		case UrlsView:
+			cmds = append(cmds, m.auditUrls.loadCmd(m.tenantID))
+		case IssuesView:
+			cmds = append(cmds, m.auditIssues.loadCmd(m.tenantID))
+		}
+	}
+	switch len(cmds) {
+	case 0:
+		return m, nil
+	case 1:
+		return m, cmds[0]
+	default:
+		return m, tea.Batch(cmds...)
+	}
+}
+
 // pushNotification records a notification in the header bar.
 func (m Model) pushNotification(n Notification) Model {
 	m.notifications = m.notifications.Push(n)
@@ -438,13 +511,10 @@ func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
 
 	m.nav = m.nav.Select(msg.target)
 
-	// Refresh the dashboard data so its previous-run deltas compare the
-	// fresh run against the one before it.
-	cmds := []tea.Cmd{m.loadTenantsCmd(), m.activateCmd()}
-	if msg.audit != nil {
-		cmds = append(cmds, m.dashboard.loadCmd(msg.audit.ID))
-	}
-	return m, tea.Batch(cmds...)
+	// The activation command reloads the dashboard data of the active view,
+	// so the previous-run deltas compare the fresh run against the one
+	// before it.
+	return m, tea.Batch(m.loadTenantsCmd(), m.activateCmd())
 }
 
 // helpText picks the footer help: the switcher help while its overlay is

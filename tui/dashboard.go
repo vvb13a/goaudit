@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -24,6 +25,13 @@ type dashboardLoadedMsg struct {
 	audit    *domain.Audit
 	previous *domain.AuditSnapshot
 	err      error
+}
+
+// auditCreatedMsg reports the outcome of creating a new audit without
+// running it.
+type auditCreatedMsg struct {
+	audit *domain.Audit
+	err   error
 }
 
 type dashboardState int
@@ -335,13 +343,19 @@ func (m DashboardModel) submitAuditForm() (DashboardModel, tea.Cmd) {
 		return m, NotifyDanger("Select at least one check")
 	}
 
-	checks, err := m.deps.Registry.Resolve(chosen)
-	if err != nil {
-		return m, NotifyDanger(fmt.Sprintf("Cannot run audit: %v", err))
-	}
-
+	// Creating an audit only persists its configuration: the first run is
+	// started deliberately afterwards (r in the audit switcher).
+	m.state = dashboardListState
 	cfg := effectiveConfig(m.deps, nil)
-	return m.startAuditRun(name, "", targets, checks, cfg, "", fmt.Sprintf("Running audit '%s'", name))
+	configRaw, err := json.Marshal(cfg)
+	if err != nil {
+		return m, NotifyDanger(fmt.Sprintf("Cannot encode config: %v", err))
+	}
+	idName := name
+	return m, func() tea.Msg {
+		audit, err := m.deps.AuditService.CreateBlank(context.Background(), idName, "", targets, chosen, configRaw)
+		return auditCreatedMsg{audit: audit, err: err}
+	}
 }
 
 // startRerun launches a new audit from the configuration stored on an
@@ -461,7 +475,7 @@ func (m DashboardModel) emptyTenantView() string {
 // URL per line and the checks to run.
 func (m DashboardModel) formView() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Run a New Audit"))
+	b.WriteString(titleStyle.Render("New Audit"))
 	b.WriteString("\n\n")
 
 	nameLabel := "Name:"
@@ -695,12 +709,12 @@ func (m DashboardModel) lifecycleCounts() map[domain.IssueLifecycle]int {
 // overviewMetrics are the hero totals: audited URLs, issues, checks and the
 // overall audit score.
 func (m DashboardModel) overviewMetrics() []widgetMetric {
-	prev := m.previous
-	var prevURLs, prevIssues, prevChecks int
-	var prevScore float64
-	if prev != nil {
-		prevURLs, prevIssues = prev.Overview.TotalURLs, prev.Overview.TotalIssues
-		prevChecks, prevScore = prev.Overview.TotalChecks, prev.Overview.Score
+	var urlsDelta, issuesDelta, checksDelta, scoreDelta string
+	if prev := m.previous; prev != nil {
+		urlsDelta = intDelta(len(m.audit.Urls), prev.Overview.TotalURLs)
+		issuesDelta = intDelta(m.totalIssues(), prev.Overview.TotalIssues)
+		checksDelta = intDelta(m.totalChecks(), prev.Overview.TotalChecks)
+		scoreDelta = floatDelta(m.audit.Score, prev.Overview.Score)
 	}
 
 	score := m.audit.Score
@@ -711,10 +725,10 @@ func (m DashboardModel) overviewMetrics() []widgetMetric {
 		{label: "Score", color: auditScoreColor(score)},
 	}
 	return metricsOf(boxes,
-		withDelta(fmt.Sprintf("%d", len(m.audit.Urls)), intDelta(len(m.audit.Urls), prevURLs)),
-		withDelta(fmt.Sprintf("%d", m.totalIssues()), intDelta(m.totalIssues(), prevIssues)),
-		withDelta(fmt.Sprintf("%d", m.totalChecks()), intDelta(m.totalChecks(), prevChecks)),
-		withDelta(fmt.Sprintf("%.1f", score), floatDelta(score, prevScore)),
+		withDelta(fmt.Sprintf("%d", len(m.audit.Urls)), urlsDelta),
+		withDelta(fmt.Sprintf("%d", m.totalIssues()), issuesDelta),
+		withDelta(fmt.Sprintf("%d", m.totalChecks()), checksDelta),
+		withDelta(fmt.Sprintf("%.1f", score), scoreDelta),
 	)
 }
 
@@ -735,10 +749,11 @@ func auditScoreColor(score float64) lipgloss.Color {
 // urlStateMetrics counts the audited URLs by their lifecycle state.
 func (m DashboardModel) urlStateMetrics() []widgetMetric {
 	newURLs, activeURLs, missingURLs := m.urlStateCounts()
-	var prevNew, prevActive, prevMissing int
+	var newDelta, activeDelta, missingDelta string
 	if prev := m.previous; prev != nil {
-		prevNew, prevActive = prev.URLStates.New, prev.URLStates.Active
-		prevMissing = prev.URLStates.Missing
+		newDelta = intDelta(newURLs, prev.URLStates.New)
+		activeDelta = intDelta(activeURLs, prev.URLStates.Active)
+		missingDelta = intDelta(missingURLs, prev.URLStates.Missing)
 	}
 	boxes := []metricBox{
 		{label: "New", color: lipgloss.Color("#2ac3de")},
@@ -746,18 +761,27 @@ func (m DashboardModel) urlStateMetrics() []widgetMetric {
 		{label: "Missing", color: lipgloss.Color("#f7768e")},
 	}
 	return metricsOf(boxes,
-		withDelta(fmt.Sprintf("%d", newURLs), intDelta(newURLs, prevNew)),
-		withDelta(fmt.Sprintf("%d", activeURLs), intDelta(activeURLs, prevActive)),
-		withDelta(fmt.Sprintf("%d", missingURLs), intDelta(missingURLs, prevMissing)),
+		withDelta(fmt.Sprintf("%d", newURLs), newDelta),
+		withDelta(fmt.Sprintf("%d", activeURLs), activeDelta),
+		withDelta(fmt.Sprintf("%d", missingURLs), missingDelta),
 	)
 }
 
 // severityMetrics tallies every issue of the audit by severity.
 func (m DashboardModel) severityMetrics() []widgetMetric {
 	counts := m.severityCounts()
-	var prev domain.SeverityCounts
-	if m.previous != nil {
-		prev = m.previous.SeverityCounts
+	fatal, errs, warns := counts[domain.SeverityFatal], counts[domain.SeverityError], counts[domain.SeverityWarning]
+	notices, infos, passes := counts[domain.SeverityNotice], counts[domain.SeverityInfo], counts[domain.SeveritySuccess]
+
+	var fatalDelta, errorDelta, warnDelta, noticeDelta, infoDelta, passDelta string
+	if prev := m.previous; prev != nil {
+		p := prev.SeverityCounts
+		fatalDelta = intDelta(fatal, p.Fatal)
+		errorDelta = intDelta(errs, p.Error)
+		warnDelta = intDelta(warns, p.Warning)
+		noticeDelta = intDelta(notices, p.Notice)
+		infoDelta = intDelta(infos, p.Info)
+		passDelta = intDelta(passes, p.Success)
 	}
 	boxes := []metricBox{
 		{label: "FATAL", color: issueSeverityColor(domain.SeverityFatal)},
@@ -768,22 +792,37 @@ func (m DashboardModel) severityMetrics() []widgetMetric {
 		{label: "PASS", color: issueSeverityColor(domain.SeveritySuccess)},
 	}
 	return metricsOf(boxes,
-		withDelta(fmt.Sprintf("%d", counts[domain.SeverityFatal]), intDelta(counts[domain.SeverityFatal], prev.Fatal)),
-		withDelta(fmt.Sprintf("%d", counts[domain.SeverityError]), intDelta(counts[domain.SeverityError], prev.Error)),
-		withDelta(fmt.Sprintf("%d", counts[domain.SeverityWarning]), intDelta(counts[domain.SeverityWarning], prev.Warning)),
-		withDelta(fmt.Sprintf("%d", counts[domain.SeverityNotice]), intDelta(counts[domain.SeverityNotice], prev.Notice)),
-		withDelta(fmt.Sprintf("%d", counts[domain.SeverityInfo]), intDelta(counts[domain.SeverityInfo], prev.Info)),
-		withDelta(fmt.Sprintf("%d", counts[domain.SeveritySuccess]), intDelta(counts[domain.SeveritySuccess], prev.Success)),
+		withDelta(fmt.Sprintf("%d", fatal), fatalDelta),
+		withDelta(fmt.Sprintf("%d", errs), errorDelta),
+		withDelta(fmt.Sprintf("%d", warns), warnDelta),
+		withDelta(fmt.Sprintf("%d", notices), noticeDelta),
+		withDelta(fmt.Sprintf("%d", infos), infoDelta),
+		withDelta(fmt.Sprintf("%d", passes), passDelta),
 	)
 }
 
 // lifecycleMetrics tallies every issue of the audit by its lifecycle state.
 func (m DashboardModel) lifecycleMetrics() []widgetMetric {
 	counts := m.lifecycleCounts()
-	var prev domain.SnapshotLifecycles
-	if m.previous != nil {
-		prev = m.previous.LifecycleCounts
+	lifecycleDeltas := func(prev domain.SnapshotLifecycles) []string {
+		return []string{
+			intDelta(counts[domain.LifecycleNew], prev.New),
+			intDelta(counts[domain.LifecycleOpen], prev.Open),
+			intDelta(counts[domain.LifecycleResurfaced], prev.Resurfaced),
+			intDelta(counts[domain.LifecycleResolved], prev.Resolved),
+			intDelta(counts[domain.LifecycleImproved], prev.Improved),
+			intDelta(counts[domain.LifecycleDegraded], prev.Degraded),
+			intDelta(counts[domain.LifecyclePassed], prev.Passed),
+		}
 	}
+	var deltas []string
+	if m.previous != nil {
+		deltas = lifecycleDeltas(m.previous.LifecycleCounts)
+	}
+	if deltas == nil {
+		deltas = make([]string, 7)
+	}
+
 	boxes := []metricBox{
 		{label: "NEW", color: lipgloss.Color("#2ac3de")},
 		{label: "OPEN", color: lipgloss.Color("#e0af68")},
@@ -794,13 +833,13 @@ func (m DashboardModel) lifecycleMetrics() []widgetMetric {
 		{label: "PASSED", color: lipgloss.Color("#7aa2f7")},
 	}
 	return metricsOf(boxes,
-		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleNew]), intDelta(counts[domain.LifecycleNew], prev.New)),
-		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleOpen]), intDelta(counts[domain.LifecycleOpen], prev.Open)),
-		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleResurfaced]), intDelta(counts[domain.LifecycleResurfaced], prev.Resurfaced)),
-		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleResolved]), intDelta(counts[domain.LifecycleResolved], prev.Resolved)),
-		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleImproved]), intDelta(counts[domain.LifecycleImproved], prev.Improved)),
-		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleDegraded]), intDelta(counts[domain.LifecycleDegraded], prev.Degraded)),
-		withDelta(fmt.Sprintf("%d", counts[domain.LifecyclePassed]), intDelta(counts[domain.LifecyclePassed], prev.Passed)),
+		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleNew]), deltas[0]),
+		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleOpen]), deltas[1]),
+		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleResurfaced]), deltas[2]),
+		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleResolved]), deltas[3]),
+		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleImproved]), deltas[4]),
+		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleDegraded]), deltas[5]),
+		withDelta(fmt.Sprintf("%d", counts[domain.LifecyclePassed]), deltas[6]),
 	)
 }
 
@@ -906,7 +945,7 @@ func (m DashboardModel) Help() string {
 	case dashboardRunningState:
 		return "Audit in progress  •  Ctrl+C: Quit"
 	case dashboardFormState:
-		return "Tab: Switch  •  Space: Toggle  •  Ctrl+S: Run  •  Esc: Cancel"
+		return "Tab: Switch  •  Space: Toggle  •  Ctrl+S: Create  •  Esc: Cancel"
 	default:
 		return "Ctrl+O: Audits  •  q: Quit"
 	}

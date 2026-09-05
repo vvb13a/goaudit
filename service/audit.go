@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -21,6 +22,30 @@ type AuditService struct {
 
 func NewAuditService(db *gorm.DB, excel *ExcelService, html *HtmlService) *AuditService {
 	return &AuditService{db: db, excel: excel, html: html}
+}
+
+// createBatchRows bounds how many rows one INSERT statement carries. SQLite
+// rejects statements whose bound variables exceed its compiled limit, which
+// varies between builds; 80 rows stay below even the most restrictive ones.
+const createBatchRows = 80
+
+// createInBatches inserts slice rows in chunks so a single statement never
+// exceeds the SQLite variable limit.
+func createInBatches(tx *gorm.DB, rows any) error {
+	v := reflect.ValueOf(rows)
+	if v.Kind() != reflect.Slice || v.Len() == 0 {
+		return nil
+	}
+	for start := 0; start < v.Len(); start += createBatchRows {
+		end := start + createBatchRows
+		if end > v.Len() {
+			end = v.Len()
+		}
+		if err := tx.Create(v.Slice(start, end).Interface()).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Create persists a freshly run audit as a new record. Every audited URL of
@@ -63,15 +88,11 @@ func (s *AuditService) Create(ctx context.Context, a *domain.Audit) error {
 		if err := tx.Create(store.AuditModel(a)).Error; err != nil {
 			return fmt.Errorf("insert audit: %w", err)
 		}
-		if len(urlModels) > 0 {
-			if err := tx.Create(urlModels).Error; err != nil {
-				return fmt.Errorf("insert audited urls: %w", err)
-			}
+		if err := createInBatches(tx, urlModels); err != nil {
+			return fmt.Errorf("insert audited urls: %w", err)
 		}
-		if len(issueModels) > 0 {
-			if err := tx.Create(issueModels).Error; err != nil {
-				return fmt.Errorf("insert issues: %w", err)
-			}
+		if err := createInBatches(tx, issueModels); err != nil {
+			return fmt.Errorf("insert issues: %w", err)
 		}
 		return nil
 	}); err != nil {
@@ -170,10 +191,8 @@ func (s *AuditService) ReplaceRun(ctx context.Context, a *domain.Audit) error {
 				return fmt.Errorf("update audited urls: %w", err)
 			}
 		}
-		if len(inserts) > 0 {
-			if err := tx.Create(inserts).Error; err != nil {
-				return fmt.Errorf("insert audited urls: %w", err)
-			}
+		if err := createInBatches(tx, inserts); err != nil {
+			return fmt.Errorf("insert audited urls: %w", err)
 		}
 		// URLs audited by an earlier run that did not reappear stay stored
 		// and are flipped to missing. Their issues were removed above; their
@@ -187,10 +206,8 @@ func (s *AuditService) ReplaceRun(ctx context.Context, a *domain.Audit) error {
 				return fmt.Errorf("mark missing urls: %w", err)
 			}
 		}
-		if len(issueModels) > 0 {
-			if err := tx.Create(issueModels).Error; err != nil {
-				return fmt.Errorf("insert issues: %w", err)
-			}
+		if err := createInBatches(tx, issueModels); err != nil {
+			return fmt.Errorf("insert issues: %w", err)
 		}
 		return nil
 	})
@@ -215,6 +232,134 @@ func (s *AuditService) captureSnapshot(ctx context.Context, auditID string) erro
 		return fmt.Errorf("insert audit snapshot: %w", err)
 	}
 	return nil
+}
+
+// ApplyURLRecheck persists a re-audit of a single audited URL of an audit
+// without touching the audit's run history: no snapshot row is recorded and
+// the audit record keeps its run metadata (started at, duration). Only the
+// URL row, its issues and the derived audit score change — the URL rows and
+// issues of every other URL stay untouched. The fresh result is the raw
+// engine output for that URL; its lifecycle metadata and summary are derived
+// here, using the previous issue rows of the URL for transitions.
+func (s *AuditService) ApplyURLRecheck(ctx context.Context, auditID string, fresh *domain.AuditedUrl) error {
+	if auditID == "" || fresh == nil || fresh.URL == "" {
+		return domain.ErrInvalidAudit
+	}
+	now := time.Now().UTC()
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row store.AuditedUrl
+		err := tx.Where("audit_id = ? AND url = ?", auditID, fresh.URL).First(&row).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("url %q is not part of audit %s", fresh.URL, auditID)
+		}
+		if err != nil {
+			return fmt.Errorf("load audited url: %w", err)
+		}
+
+		oldIdentity := row.FinalURL
+		if oldIdentity == "" {
+			oldIdentity = row.URL
+		}
+		newIdentity := fresh.FinalURL
+		if newIdentity == "" {
+			newIdentity = fresh.URL
+		}
+
+		// The issues of the previous result of this URL act as the prior
+		// state for lifecycle transitions.
+		var previous []store.Issue
+		if err := tx.Where("audit_id = ? AND url = ?", auditID, oldIdentity).Find(&previous).Error; err != nil {
+			return fmt.Errorf("load previous issues: %w", err)
+		}
+		oldByID := make(map[string]store.Issue, len(previous))
+		for _, iss := range previous {
+			oldByID[iss.ID] = iss
+		}
+
+		// Replace the stored issues of the URL. When the final URL changed,
+		// rows shared with other URLs keep describing the shared page and
+		// are left in place; orphaned ones are removed.
+		if oldIdentity == newIdentity {
+			if err := tx.Where("audit_id = ? AND url = ?", auditID, oldIdentity).Delete(&store.Issue{}).Error; err != nil {
+				return fmt.Errorf("replace issues: %w", err)
+			}
+		} else {
+			var sharers int64
+			if err := tx.Model(&store.AuditedUrl{}).
+				Where("audit_id = ? AND url <> ? AND final_url = ?", auditID, fresh.URL, oldIdentity).
+				Count(&sharers).Error; err != nil {
+				return fmt.Errorf("count shared urls: %w", err)
+			}
+			if sharers == 0 {
+				if err := tx.Where("audit_id = ? AND url = ?", auditID, oldIdentity).Delete(&store.Issue{}).Error; err != nil {
+					return fmt.Errorf("replace issues: %w", err)
+				}
+			}
+		}
+
+		// Lifecycle metadata of the row: the row keeps its creation time and
+		// its state unless it was missing, in which case the recheck revives
+		// it.
+		fresh.CreatedAt = row.CreatedAt
+		fresh.LastAudited = now
+		if row.State == string(domain.UrlStateMissing) {
+			fresh.State = domain.UrlStateActive
+		} else {
+			fresh.State = domain.UrlState(row.State)
+		}
+		fresh.CalculateSummary()
+
+		if err := tx.Save(store.AuditedUrlModel(auditID, fresh)).Error; err != nil {
+			return fmt.Errorf("update audited url: %w", err)
+		}
+
+		seen := make(map[string]struct{})
+		issueModels := make([]*store.Issue, 0, len(fresh.Issues))
+		for j := range fresh.Issues {
+			issue := &fresh.Issues[j]
+			id := store.IssueID(auditID, newIdentity, issue.CheckName)
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			if oldRow, ok := oldByID[id]; ok {
+				applyIssueTransition(&oldRow, issue, now)
+			} else {
+				issue.PriorSeverity = ""
+				issue.Lifecycle = domain.LifecycleNew
+			}
+			issueModels = append(issueModels, store.IssueModel(auditID, newIdentity, issue, now))
+		}
+		if err := createInBatches(tx, issueModels); err != nil {
+			return fmt.Errorf("insert issues: %w", err)
+		}
+
+		// The derived audit score changes with the URL; the run metadata of
+		// the audit row stays untouched.
+		var urlModels []store.AuditedUrl
+		if err := tx.Where("audit_id = ?", auditID).Order("rowid").Find(&urlModels).Error; err != nil {
+			return fmt.Errorf("load audited urls: %w", err)
+		}
+		var scoreSum float64
+		scored := 0
+		for i := range urlModels {
+			u := urlModels[i].ToDomain()
+			if u.State == domain.UrlStateMissing {
+				continue
+			}
+			scoreSum += u.Summary.Score
+			scored++
+		}
+		var score float64
+		if scored > 0 {
+			score = scoreSum / float64(scored)
+		}
+		if err := tx.Model(&store.Audit{}).Where("id = ?", auditID).Update("score", score).Error; err != nil {
+			return fmt.Errorf("update audit score: %w", err)
+		}
+		return nil
+	})
 }
 
 // applyIssueTransition rotates the stored severity into prior_severity and
@@ -354,6 +499,41 @@ func (s *AuditService) UpdateConfig(ctx context.Context, id, name, description s
 		return domain.ErrAuditNotFound
 	}
 	return nil
+}
+
+// CreateBlank persists the run configuration of a new audit without running
+// it: the record carries name, description, targets, check names and the
+// canonicalized engine config but no URLs or issues yet. The first run
+// happens later through ReplaceRun, so creating an audit never triggers one.
+func (s *AuditService) CreateBlank(ctx context.Context, name, description string, targets, checkNames []string, config json.RawMessage) (*domain.Audit, error) {
+	if strings.TrimSpace(name) == "" {
+		return nil, fmt.Errorf("audit name is required")
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("audit must contain at least one target URL")
+	}
+	if len(checkNames) == 0 {
+		return nil, fmt.Errorf("audit must contain at least one check")
+	}
+
+	canonicalConfig, err := json.Marshal(MergeConfig(*DefaultConfig(), config))
+	if err != nil {
+		return nil, fmt.Errorf("normalize audit config: %w", err)
+	}
+
+	audit := &domain.Audit{
+		ID:          fmt.Sprintf("aud_%d", time.Now().UnixNano()),
+		Name:        name,
+		Description: description,
+		Targets:     targets,
+		CheckNames:  checkNames,
+		Config:      canonicalConfig,
+		StartedAt:   time.Now().UTC(),
+	}
+	if err := s.db.WithContext(ctx).Create(store.AuditModel(audit)).Error; err != nil {
+		return nil, fmt.Errorf("insert audit: %w", err)
+	}
+	return audit, nil
 }
 
 func (s *AuditService) List(ctx context.Context, filter domain.AuditFilter) ([]*domain.Audit, error) {

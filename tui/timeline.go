@@ -168,13 +168,17 @@ func (m *TimelineModel) rebuildTable() {
 	}
 
 	rows := make([]table.Row, 0, len(m.snapshots))
-	for _, s := range m.snapshots {
+	// Snapshots are listed newest first, so the very last row is the audit's
+	// first run. On that run everything is new by definition, so the (+new)
+	// hint would be noise and is omitted.
+	firstIdx := len(m.snapshots) - 1
+	for i, s := range m.snapshots {
 		row := table.Row{clipCell(timelineTime(s.CreatedAt), timeW-1), fmt.Sprintf("%.1f", s.Overview.Score)}
 		if urlW > 0 {
-			row = append(row, totalWithNew(s.Overview.TotalURLs, s.URLStates.New))
+			row = append(row, totalWithNew(s.Overview.TotalURLs, s.URLStates.New, i != firstIdx))
 		}
 		if issuesW > 0 {
-			row = append(row, totalWithNew(s.Overview.TotalIssues, s.LifecycleCounts.New))
+			row = append(row, totalWithNew(s.Overview.TotalIssues, s.LifecycleCounts.New, i != firstIdx))
 		}
 		row = append(row, fmt.Sprintf("%d", s.SeverityCounts.Fatal+s.SeverityCounts.Error))
 		if durW > 0 {
@@ -215,9 +219,10 @@ func timelineTime(t time.Time) string {
 }
 
 // totalWithNew renders a count as "total (+new)", omitting the new part
-// when nothing is new.
-func totalWithNew(total, newCount int) string {
-	if newCount > 0 {
+// when nothing is new or when there is no previous run to compare against
+// (showNew false).
+func totalWithNew(total, newCount int, showNew bool) string {
+	if showNew && newCount > 0 {
 		return fmt.Sprintf("%d (+%d)", total, newCount)
 	}
 	return fmt.Sprintf("%d", total)
