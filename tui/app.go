@@ -31,9 +31,8 @@ const (
 	DashboardView ViewID = iota
 	IssuesView
 	UrlsView
-	EditAuditView
-	ChecksView
 	TimelineView
+	ConfigView
 )
 
 // viewSizeMsg replays the content dimensions to a view that just became
@@ -61,10 +60,9 @@ type Model struct {
 	notifications NotificationModel
 	dashboard     DashboardModel
 	auditUrls     AuditUrlsModel
-	auditEdit     AuditEditModel
-	auditChecks   AuditChecksModel
 	auditIssues   AuditIssuesModel
 	timeline      TimelineModel
+	config        AuditConfigModel
 	width         int
 	height        int
 
@@ -92,9 +90,8 @@ type Model struct {
 	dashboardSized   bool
 	auditUrlsSized   bool
 	auditIssuesSized bool
-	auditEditSized   bool
-	auditChecksSized bool
 	timelineSized    bool
+	configSized      bool
 }
 
 func New(deps Deps) Model {
@@ -104,18 +101,16 @@ func New(deps Deps) Model {
 			{ID: DashboardView, Label: "Dashboard"},
 			{ID: IssuesView, Label: "Issues"},
 			{ID: UrlsView, Label: "URLs"},
-			{ID: EditAuditView, Label: "Edit"},
-			{ID: ChecksView, Label: "Checks"},
 			{ID: TimelineView, Label: "Timeline"},
+			{ID: ConfigView, Label: "Config"},
 		}),
 		footer:        NewFooterModel(),
 		notifications: NewNotificationModel(),
 		dashboard:     NewDashboardModel(deps),
 		auditUrls:     NewAuditUrlsModel(deps),
-		auditEdit:     NewAuditEditModel(deps),
-		auditChecks:   NewAuditChecksModel(deps),
 		auditIssues:   NewAuditIssuesModel(deps),
 		timeline:      NewTimelineModel(deps),
+		config:        NewAuditConfigModel(deps),
 	}
 }
 
@@ -147,12 +142,10 @@ func (m Model) activateCmd() tea.Cmd {
 		sized = m.auditUrlsSized
 	case IssuesView:
 		sized = m.auditIssuesSized
-	case EditAuditView:
-		sized = m.auditEditSized
-	case ChecksView:
-		sized = m.auditChecksSized
 	case TimelineView:
 		sized = m.timelineSized
+	case ConfigView:
+		sized = m.configSized
 	}
 
 	if m.width > 0 && !sized {
@@ -170,10 +163,8 @@ func (m Model) activateCmd() tea.Cmd {
 			cmds = append(cmds, m.auditIssues.loadCmd(m.tenantID))
 		case TimelineView:
 			cmds = append(cmds, m.timeline.loadCmd(m.tenantID))
-		case EditAuditView:
-			cmds = append(cmds, m.auditEdit.loadCmd(m.tenantID))
-		case ChecksView:
-			cmds = append(cmds, m.auditChecks.loadCmd(m.tenantID))
+		case ConfigView:
+			cmds = append(cmds, m.config.loadCmd(m.tenantID))
 		}
 	}
 
@@ -195,10 +186,8 @@ func (m Model) markViewSized() {
 		m.auditUrlsSized = true
 	case IssuesView:
 		m.auditIssuesSized = true
-	case EditAuditView:
-		m.auditEditSized = true
-	case ChecksView:
-		m.auditChecksSized = true
+	case ConfigView:
+		m.configSized = true
 	case TimelineView:
 		m.timelineSized = true
 	}
@@ -215,10 +204,8 @@ func (m Model) viewIsRoot() bool {
 		return m.auditUrls.NavigationEnabled()
 	case IssuesView:
 		return m.auditIssues.NavigationEnabled()
-	case EditAuditView:
-		return m.auditEdit.NavigationEnabled()
-	case ChecksView:
-		return m.auditChecks.NavigationEnabled()
+	case ConfigView:
+		return m.config.NavigationEnabled()
 	case TimelineView:
 		return m.timeline.NavigationEnabled()
 	}
@@ -237,10 +224,8 @@ func (m Model) goToView(id ViewID) (Model, tea.Cmd) {
 			m.auditIssues = m.auditIssues.Track(m.tenantID)
 		case TimelineView:
 			m.timeline = m.timeline.Track(m.tenantID)
-		case EditAuditView:
-			m.auditEdit = m.auditEdit.Track(m.tenantID)
-		case ChecksView:
-			m.auditChecks = m.auditChecks.Track(m.tenantID)
+		case ConfigView:
+			m.config = m.config.Track(m.tenantID)
 		}
 	}
 	return m, m.activateCmd()
@@ -328,7 +313,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// The audit editors use Esc as their way back to the audit view
 			// (Tab cycles their fields, so it cannot leave the view).
 			switch m.nav.Active() {
-			case EditAuditView, ChecksView:
+			case ConfigView:
 				return m.goToView(DashboardView)
 			}
 		}
@@ -390,13 +375,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.auditIssues, cmd = m.auditIssues.Update(msg)
 		return m, cmd
-	case EditAuditView:
+	case ConfigView:
 		var cmd tea.Cmd
-		m.auditEdit, cmd = m.auditEdit.Update(msg)
-		return m, cmd
-	case ChecksView:
-		var cmd tea.Cmd
-		m.auditChecks, cmd = m.auditChecks.Update(msg)
+		m.config, cmd = m.config.Update(msg)
 		return m, cmd
 	case TimelineView:
 		var cmd tea.Cmd
@@ -483,10 +464,8 @@ func (m Model) activeViewHelp() string {
 		return m.auditUrls.Help()
 	case IssuesView:
 		return m.auditIssues.Help()
-	case EditAuditView:
-		return m.auditEdit.Help()
-	case ChecksView:
-		return m.auditChecks.Help()
+	case ConfigView:
+		return m.config.Help()
 	case TimelineView:
 		return m.timeline.Help()
 	}
@@ -620,10 +599,8 @@ func (m Model) activeViewContent() string {
 		return m.auditUrls.View()
 	case IssuesView:
 		return m.auditIssues.View()
-	case EditAuditView:
-		return m.auditEdit.View()
-	case ChecksView:
-		return m.auditChecks.View()
+	case ConfigView:
+		return m.config.View()
 	case TimelineView:
 		return m.timeline.View()
 	}

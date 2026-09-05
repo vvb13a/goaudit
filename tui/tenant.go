@@ -78,8 +78,7 @@ func (m Model) handleTenantDeleted(msg tenantDeletedMsg) (tea.Model, tea.Cmd) {
 		m.setTenant("", "")
 		m.dashboard = m.dashboard.clearTenant()
 		m.auditUrls = m.auditUrls.Track("")
-		m.auditEdit = m.auditEdit.Track("")
-		m.auditChecks = m.auditChecks.Track("")
+		m.config = m.config.Track("")
 		m.auditIssues = m.auditIssues.Track("")
 		m.timeline = m.timeline.Track("")
 	}

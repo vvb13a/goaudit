@@ -488,7 +488,7 @@ func (m *AuditIssuesModel) rebuildTable() {
 		msgW = 8
 	}
 	columns := []table.Column{
-		{Title: "Sev", Width: sevW},
+		{Title: "Severity", Width: sevW},
 		{Title: "Lifecycle", Width: lcW},
 		{Title: "Check", Width: checkW},
 		{Title: "Category", Width: catW},
