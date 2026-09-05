@@ -428,7 +428,7 @@ func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
 		notification = Notification{
 			Kind: NotificationSuccess,
 			Text: fmt.Sprintf("Audit '%s' finished: %d endpoints in %v",
-				msg.audit.Name, len(msg.audit.Reports), msg.audit.Duration.Round(time.Millisecond).String()),
+				msg.audit.Name, len(msg.audit.Urls), msg.audit.Duration.Round(time.Millisecond).String()),
 		}
 	default:
 		notification = Notification{Kind: NotificationSuccess, Text: fmt.Sprintf("Audit '%s' finished", msg.title)}

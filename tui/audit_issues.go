@@ -146,7 +146,7 @@ func minIssueSeverity(a *domain.Audit) domain.Severity {
 // it belongs to.
 func flattenIssues(a *domain.Audit) []issueRow {
 	var rows []issueRow
-	for _, rep := range a.Reports {
+	for _, rep := range a.Urls {
 		for _, iss := range rep.Issues {
 			rows = append(rows, issueRow{url: rep.URL, issue: iss})
 		}

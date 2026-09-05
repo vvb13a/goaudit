@@ -173,7 +173,7 @@ func (s *ExcelService) writeSummary(f *excelize.File, a *domain.Audit, titleStyl
 		{"Audit ID", a.ID},
 		{"Started", formatTimestamp(a.StartedAt)},
 		{"Duration", a.Duration.Round(time.Millisecond).String()},
-		{"Endpoints audited", fmt.Sprintf("%d", len(a.Reports))},
+		{"Endpoints audited", fmt.Sprintf("%d", len(a.Urls))},
 		{"Failed endpoints", fmt.Sprintf("%d", a.Summary.FailedCount)},
 	}
 	if strings.TrimSpace(a.Description) != "" {
@@ -254,29 +254,29 @@ func (s *ExcelService) writeReports(f *excelize.File, a *domain.Audit, headerSty
 	}
 
 	row := 2
-	for _, rep := range a.Reports {
+	for _, u := range a.Urls {
 		result := "PASSED"
-		if rep.Summary.FailedCount > 0 {
+		if u.Summary.FailedCount() > 0 {
 			result = "FAILED"
 		}
 		values := []any{
-			rep.URL,
-			rep.FinalURL,
+			u.URL,
+			u.FinalURL,
 			result,
-			rep.StatusCode,
-			rep.Duration.Seconds(),
-			rep.Summary.TotalCount,
-			rep.Summary.FailedCount,
-			rep.Summary.PassedCount,
-			severityLabel(rep.Summary.HighestSeverity),
+			u.StatusCode,
+			u.Duration.Seconds(),
+			u.Summary.TotalCount(),
+			u.Summary.FailedCount(),
+			u.Summary.PassedCount(),
+			severityLabel(u.Summary.HighestSeverity),
 		}
 		if err := setRow(f, sheetReports, row, values); err != nil {
 			return err
 		}
-		if err := setHyperlink(f, sheetReports, fmt.Sprintf("A%d", row), rep.URL); err != nil {
+		if err := setHyperlink(f, sheetReports, fmt.Sprintf("A%d", row), u.URL); err != nil {
 			return err
 		}
-		if err := setHyperlink(f, sheetReports, fmt.Sprintf("B%d", row), rep.FinalURL); err != nil {
+		if err := setHyperlink(f, sheetReports, fmt.Sprintf("B%d", row), u.FinalURL); err != nil {
 			return err
 		}
 		row++
@@ -302,7 +302,7 @@ func (s *ExcelService) writeIssues(f *excelize.File, a *domain.Audit, headerStyl
 	}
 
 	row := 2
-	for _, rep := range a.Reports {
+	for _, rep := range a.Urls {
 		sorted := sortedIssues(rep.Issues)
 		for _, iss := range sorted {
 			status := "FAILED"
@@ -402,7 +402,7 @@ var severityRanking = []domain.Severity{
 // severityCounts tallies issues across all reports of the audit by severity.
 func severityCounts(a *domain.Audit) map[domain.Severity]int {
 	counts := make(map[domain.Severity]int)
-	for _, rep := range a.Reports {
+	for _, rep := range a.Urls {
 		for _, iss := range rep.Issues {
 			counts[iss.Severity]++
 		}

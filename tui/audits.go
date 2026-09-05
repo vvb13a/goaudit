@@ -135,7 +135,7 @@ func (m AuditsModel) Update(msg tea.Msg) (AuditsModel, tea.Cmd) {
 			return m, NotifyDanger(fmt.Sprintf("Failed to load audit details: %v", msg.err))
 		}
 		m.detailAudit = msg.audit
-		if m.reportIdx >= len(msg.audit.Reports) {
+		if m.reportIdx >= len(msg.audit.Urls) {
 			m.reportIdx = 0
 		}
 		m.rebuildReportsTable()
@@ -286,11 +286,11 @@ func (m AuditsModel) beginNewAudit() AuditsModel {
 	return m
 }
 
-func (m AuditsModel) currentReport() *domain.Report {
-	if m.detailAudit == nil || m.reportIdx < 0 || m.reportIdx >= len(m.detailAudit.Reports) {
+func (m AuditsModel) currentReport() *domain.AuditedUrl {
+	if m.detailAudit == nil || m.reportIdx < 0 || m.reportIdx >= len(m.detailAudit.Urls) {
 		return nil
 	}
-	return m.detailAudit.Reports[m.reportIdx]
+	return m.detailAudit.Urls[m.reportIdx]
 }
 
 // ---- Run form and execution ----
@@ -453,8 +453,13 @@ func (m AuditsModel) startRerun(a *domain.Audit) (AuditsModel, tea.Cmd) {
 			description = full.Description
 		}
 		if len(targets) == 0 {
-			for _, rep := range full.Reports {
-				targets = append(targets, rep.URL)
+			for _, u := range full.Urls {
+				// URLs that did not reappear in the latest run are skipped:
+				// rerunning an audit re-checks the URLs it last audited.
+				if u.State == domain.UrlStateMissing {
+					continue
+				}
+				targets = append(targets, u.URL)
 			}
 		}
 		if len(checkNames) == 0 {
@@ -601,7 +606,7 @@ func (m AuditsModel) leftPaneView() string {
 	if m.detailAudit == nil {
 		return ""
 	}
-	if len(m.detailAudit.Reports) == 0 {
+	if len(m.detailAudit.Urls) == 0 {
 		return "No reports."
 	}
 	return m.reportsTable.View()
@@ -876,8 +881,8 @@ func (m *AuditsModel) rebuildReportsTable() {
 		{Title: "URL", Width: urlW},
 	}
 
-	rows := make([]table.Row, 0, len(m.detailAudit.Reports))
-	for _, rep := range m.detailAudit.Reports {
+	rows := make([]table.Row, 0, len(m.detailAudit.Urls))
+	for _, rep := range m.detailAudit.Urls {
 		rows = append(rows, table.Row{
 			clipCell(reportResult(rep), resW-1),
 			clipCell(rep.URL, urlW-1),
@@ -965,9 +970,9 @@ func (m *AuditsModel) rebuildIssuesTable() {
 	m.issuesTable = t
 }
 
-func reportResult(rep *domain.Report) string {
-	if rep.Summary.FailedCount > 0 {
-		return fmt.Sprintf("%d fail", rep.Summary.FailedCount)
+func reportResult(u *domain.AuditedUrl) string {
+	if failed := u.Summary.FailedCount(); failed > 0 {
+		return fmt.Sprintf("%d fail", failed)
 	}
 	return "pass"
 }

@@ -23,21 +23,30 @@ func NewAuditService(db *gorm.DB, excel *ExcelService, html *HtmlService) *Audit
 	return &AuditService{db: db, excel: excel, html: html}
 }
 
+// Create persists a freshly run audit as a new record. Every audited URL of
+// the run is stored as a new row (State new) together with its issues. The
+// per-URL UrlSummary values are computed here at persisting time and the
+// audit summary is derived from them.
 func (s *AuditService) Create(ctx context.Context, a *domain.Audit) error {
-	reportModels := make([]*store.Report, 0, len(a.Reports))
-	issueModels := make([]*store.Issue, 0)
 	now := time.Now().UTC()
+	urlModels := make([]*store.AuditedUrl, 0, len(a.Urls))
+	issueModels := make([]*store.Issue, 0)
 	seen := make(map[string]struct{})
 
-	for i, r := range a.Reports {
-		reportModels = append(reportModels, store.ReportModel(a.ID, fmt.Sprintf("%s_r_%d", a.ID, i+1), r))
-		for j := range r.Issues {
-			issue := &r.Issues[j]
-			url := issueURL(r)
+	for i := range a.Urls {
+		u := a.Urls[i]
+		u.CalculateSummary()
+		u.State = domain.UrlStateNew
+		u.CreatedAt = now
+		u.LastAudited = now
+		urlModels = append(urlModels, store.AuditedUrlModel(a.ID, u))
+		for j := range u.Issues {
+			issue := &u.Issues[j]
+			url := issueURL(u)
 			id := store.IssueID(a.ID, url, issue.CheckName)
 			if _, dup := seen[id]; dup {
 				// Same page reached through two targets: the issue row is
-				// stored once and re-attached to every matching report.
+				// stored once and re-attached to every matching URL.
 				continue
 			}
 			seen[id] = struct{}{}
@@ -48,13 +57,15 @@ func (s *AuditService) Create(ctx context.Context, a *domain.Audit) error {
 		}
 	}
 
+	a.CalculateSummary()
+
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(store.AuditModel(a)).Error; err != nil {
 			return fmt.Errorf("insert audit: %w", err)
 		}
-		if len(reportModels) > 0 {
-			if err := tx.Create(reportModels).Error; err != nil {
-				return fmt.Errorf("insert reports: %w", err)
+		if len(urlModels) > 0 {
+			if err := tx.Create(urlModels).Error; err != nil {
+				return fmt.Errorf("insert audited urls: %w", err)
 			}
 		}
 		if len(issueModels) > 0 {
@@ -67,17 +78,20 @@ func (s *AuditService) Create(ctx context.Context, a *domain.Audit) error {
 }
 
 // ReplaceRun persists a rerun of an existing audit without creating a new
-// audit record: the report and issue rows of the audit are replaced by the
-// fresh results and every issue keeps its identity (audit, url, check). The
-// stored severity moves to prior_severity and the fresh severity becomes the
-// current one, with the lifecycle derived from the transition. When an issue
-// already carries a prior_severity and its severity did not change, both
-// columns are left untouched.
+// audit record. The audited URL rows survive the rerun: URLs that come back
+// are updated in place and flipped to active, URLs that appear for the first
+// time are inserted as new, and previously stored URLs that did not reappear
+// are kept and marked missing. Their issues are replaced by the fresh
+// results of the run and every issue keeps its identity (audit, url, check).
+// The stored severity moves to prior_severity and the fresh severity becomes
+// the current one, with the lifecycle derived from the transition. When an
+// issue already carries a prior_severity and its severity did not change,
+// both columns are left untouched.
 func (s *AuditService) ReplaceRun(ctx context.Context, a *domain.Audit) error {
 	now := time.Now().UTC()
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Capture the previous issue state before replacing the rows.
+		// Capture the previous state of the audit before replacing the rows.
 		var previous []store.Issue
 		if err := tx.Where("audit_id = ?", a.ID).Find(&previous).Error; err != nil {
 			return fmt.Errorf("load previous issues: %w", err)
@@ -87,25 +101,45 @@ func (s *AuditService) ReplaceRun(ctx context.Context, a *domain.Audit) error {
 			oldByID[row.ID] = row
 		}
 
-		if err := tx.Where("audit_id = ?", a.ID).Delete(&store.Report{}).Error; err != nil {
-			return fmt.Errorf("replace reports: %w", err)
+		var previousURLs []store.AuditedUrl
+		if err := tx.Where("audit_id = ?", a.ID).Find(&previousURLs).Error; err != nil {
+			return fmt.Errorf("load previous urls: %w", err)
 		}
+		oldByURL := make(map[string]store.AuditedUrl, len(previousURLs))
+		for _, row := range previousURLs {
+			oldByURL[row.URL] = row
+		}
+
 		if err := tx.Where("audit_id = ?", a.ID).Delete(&store.Issue{}).Error; err != nil {
 			return fmt.Errorf("replace issues: %w", err)
 		}
-		if err := tx.Save(store.AuditModel(a)).Error; err != nil {
-			return fmt.Errorf("update audit: %w", err)
-		}
 
-		reportModels := make([]*store.Report, 0, len(a.Reports))
+		present := make(map[string]struct{}, len(a.Urls))
+		inserts := make([]*store.AuditedUrl, 0, len(a.Urls))
+		updates := make([]*store.AuditedUrl, 0, len(a.Urls))
 		issueModels := make([]*store.Issue, 0)
 		seen := make(map[string]struct{})
 
-		for i, r := range a.Reports {
-			reportModels = append(reportModels, store.ReportModel(a.ID, fmt.Sprintf("%s_r_%d", a.ID, i+1), r))
-			for j := range r.Issues {
-				issue := &r.Issues[j]
-				url := issueURL(r)
+		for i := range a.Urls {
+			u := a.Urls[i]
+			u.CalculateSummary()
+			present[u.URL] = struct{}{}
+
+			if old, ok := oldByURL[u.URL]; ok {
+				u.State = domain.UrlStateActive
+				u.CreatedAt = old.CreatedAt
+				u.LastAudited = now
+				updates = append(updates, store.AuditedUrlModel(a.ID, u))
+			} else {
+				u.State = domain.UrlStateNew
+				u.CreatedAt = now
+				u.LastAudited = now
+				inserts = append(inserts, store.AuditedUrlModel(a.ID, u))
+			}
+
+			for j := range u.Issues {
+				issue := &u.Issues[j]
+				url := issueURL(u)
 				id := store.IssueID(a.ID, url, issue.CheckName)
 				if _, dup := seen[id]; dup {
 					continue
@@ -121,9 +155,32 @@ func (s *AuditService) ReplaceRun(ctx context.Context, a *domain.Audit) error {
 			}
 		}
 
-		if len(reportModels) > 0 {
-			if err := tx.Create(reportModels).Error; err != nil {
-				return fmt.Errorf("insert reports: %w", err)
+		a.CalculateSummary()
+
+		if err := tx.Save(store.AuditModel(a)).Error; err != nil {
+			return fmt.Errorf("update audit: %w", err)
+		}
+
+		for _, model := range updates {
+			if err := tx.Save(model).Error; err != nil {
+				return fmt.Errorf("update audited urls: %w", err)
+			}
+		}
+		if len(inserts) > 0 {
+			if err := tx.Create(inserts).Error; err != nil {
+				return fmt.Errorf("insert audited urls: %w", err)
+			}
+		}
+		// URLs audited by an earlier run that did not reappear stay stored
+		// and are flipped to missing. Their issues were removed above; their
+		// summary and timestamps keep describing the last run they were in.
+		for url, old := range oldByURL {
+			if _, ok := present[url]; ok {
+				continue
+			}
+			old.State = string(domain.UrlStateMissing)
+			if err := tx.Save(&old).Error; err != nil {
+				return fmt.Errorf("mark missing urls: %w", err)
 			}
 		}
 		if len(issueModels) > 0 {
@@ -160,13 +217,13 @@ func applyIssueTransition(previous *store.Issue, issue *domain.Issue, now time.T
 	issue.Lifecycle = domain.ComputeLifecycle(issue.PriorSeverity, issue.PriorSeverity != "", issue.Severity)
 }
 
-// issueURL returns the identity URL of an issue: the final URL of its report
-// when known, otherwise the audited URL (e.g. on fetch failures).
-func issueURL(r *domain.Report) string {
-	if r.FinalURL != "" {
-		return r.FinalURL
+// issueURL returns the identity URL of an issue: the final URL of its audited
+// URL when known, otherwise the audited URL (e.g. on fetch failures).
+func issueURL(u *domain.AuditedUrl) string {
+	if u.FinalURL != "" {
+		return u.FinalURL
 	}
-	return r.URL
+	return u.URL
 }
 
 func (s *AuditService) GetByID(ctx context.Context, id string) (*domain.Audit, error) {
@@ -181,10 +238,10 @@ func (s *AuditService) GetByID(ctx context.Context, id string) (*domain.Audit, e
 
 	audit := auditModel.ToDomain()
 
-	var reportModels []store.Report
-	err = s.db.WithContext(ctx).Order("rowid").Where("audit_id = ?", id).Find(&reportModels).Error
+	var urlModels []store.AuditedUrl
+	err = s.db.WithContext(ctx).Order("rowid").Where("audit_id = ?", id).Find(&urlModels).Error
 	if err != nil {
-		return nil, fmt.Errorf("list reports for audit: %w", err)
+		return nil, fmt.Errorf("list audited urls for audit: %w", err)
 	}
 
 	var issueModels []store.Issue
@@ -193,33 +250,31 @@ func (s *AuditService) GetByID(ctx context.Context, id string) (*domain.Audit, e
 		return nil, fmt.Errorf("list issues for audit: %w", err)
 	}
 
-	audit.Reports = make([]*domain.Report, 0, len(reportModels))
-	for i := range reportModels {
-		audit.Reports = append(audit.Reports, reportModels[i].ToDomain())
+	audit.Urls = make([]*domain.AuditedUrl, 0, len(urlModels))
+	for i := range urlModels {
+		audit.Urls = append(audit.Urls, urlModels[i].ToDomain())
 	}
 
-	// Re-attach issues to their reports and recompute the per-URL summaries
-	// from the stored rows. Rows are addressed by final URL; when several
-	// targets resolve to the same page (same final URL), the single stored
-	// row is attached to every matching report because the page was checked
-	// identically for each of them.
+	// Re-attach the issues of the latest run to their URLs. Rows are
+	// addressed by final URL; when several targets resolve to the same page
+	// (same final URL), the single stored row is attached to every matching
+	// URL because the page was checked identically for each of them. URLs
+	// stored as missing have no issues of the latest run and keep the
+	// summary of the last run they were audited in.
 	for i := range issueModels {
 		issue := issueModels[i].ToDomain()
-		for _, rep := range audit.Reports {
-			if issueURL(rep) == issue.URL {
-				rep.Issues = append(rep.Issues, *issue)
+		for _, u := range audit.Urls {
+			if issueURL(u) == issue.URL {
+				u.Issues = append(u.Issues, *issue)
 			}
 		}
-	}
-	for _, rep := range audit.Reports {
-		rep.CalculateSummary()
 	}
 
 	return audit, nil
 }
 
 // GetConfig returns the stored run configuration of an audit without loading
-// its reports. It is used by the audit editors.
+// its audited urls. It is used by the audit editors.
 func (s *AuditService) GetConfig(ctx context.Context, id string) (*domain.Audit, error) {
 	var auditModel store.Audit
 	err := s.db.WithContext(ctx).First(&auditModel, "id = ?", id).Error
@@ -320,7 +375,7 @@ func (s *AuditService) Delete(ctx context.Context, id string) error {
 	}
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("audit_id = ?", id).Delete(&store.Report{}).Error; err != nil {
+		if err := tx.Where("audit_id = ?", id).Delete(&store.AuditedUrl{}).Error; err != nil {
 			return err
 		}
 		if err := tx.Where("audit_id = ?", id).Delete(&store.Issue{}).Error; err != nil {

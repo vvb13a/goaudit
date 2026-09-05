@@ -77,7 +77,7 @@ func (r *Runner) ExecuteAudit(
 		CheckNames:  checkNames(checks),
 		Config:      configRaw,
 		StartedAt:   time.Now().UTC(),
-		Reports:     make([]*domain.Report, total),
+		Urls:        make([]*domain.AuditedUrl, total),
 	}
 
 	if onProgress != nil {
@@ -111,8 +111,8 @@ func (r *Runner) ExecuteAudit(
 				time.Sleep(delay)
 			}
 
-			report := r.auditURL(ctx, fetcher, u, checks)
-			audit.Reports[idx] = report
+			audited := r.auditURL(ctx, fetcher, u, checks)
+			audit.Urls[idx] = audited
 
 			currentCompleted := int(atomic.AddInt64(&completed, 1))
 			if onProgress != nil {
@@ -127,16 +127,19 @@ func (r *Runner) ExecuteAudit(
 		return nil, err
 	}
 
-	cleanReports := make([]*domain.Report, 0, len(audit.Reports))
-	for _, rep := range audit.Reports {
-		if rep != nil {
-			cleanReports = append(cleanReports, rep)
+	// The summaries are not computed here: the per-URL UrlSummary values and
+	// the derived audit summary are calculated by the persistence layer when
+	// the run is stored, so the stored summaries always match the stored
+	// issues.
+	auditedURLs := make([]*domain.AuditedUrl, 0, len(audit.Urls))
+	for _, u := range audit.Urls {
+		if u != nil {
+			auditedURLs = append(auditedURLs, u)
 		}
 	}
-	audit.Reports = cleanReports
+	audit.Urls = auditedURLs
 
 	audit.Duration = time.Since(audit.StartedAt)
-	audit.CalculateSummary()
 
 	return audit, nil
 }
@@ -150,14 +153,17 @@ func checkNames(checks []domain.Check) []string {
 	return names
 }
 
-func (r *Runner) auditURL(ctx context.Context, fetcher *Fetcher, targetURL string, checks []domain.Check) *domain.Report {
-	report := &domain.Report{
+// auditURL runs every check against a single resolved target. The resulting
+// AuditedUrl carries only the raw page metadata and issues; its State,
+// timestamps and UrlSummary are filled in when the run is persisted.
+func (r *Runner) auditURL(ctx context.Context, fetcher *Fetcher, targetURL string, checks []domain.Check) *domain.AuditedUrl {
+	u := &domain.AuditedUrl{
 		URL: targetURL,
 	}
 
 	doc, err := fetcher.Fetch(ctx, targetURL)
 	if err != nil {
-		report.Issues = []domain.Issue{
+		u.Issues = []domain.Issue{
 			domain.NewRawIssue(
 				"http_fetch_success",
 				domain.CategoryGeneral,
@@ -166,13 +172,12 @@ func (r *Runner) auditURL(ctx context.Context, fetcher *Fetcher, targetURL strin
 				nil,
 			),
 		}
-		report.CalculateSummary()
-		return report
+		return u
 	}
 
-	report.FinalURL = doc.FinalURL
-	report.StatusCode = doc.StatusCode
-	report.Duration = doc.Duration
+	u.FinalURL = doc.FinalURL
+	u.StatusCode = doc.StatusCode
+	u.Duration = doc.Duration
 
 	for _, check := range checks {
 		if !check.Supports(doc) {
@@ -180,11 +185,10 @@ func (r *Runner) auditURL(ctx context.Context, fetcher *Fetcher, targetURL strin
 		}
 
 		issue := check.Apply(ctx, doc)
-		report.Issues = append(report.Issues, issue)
+		u.Issues = append(u.Issues, issue)
 	}
 
-	report.CalculateSummary()
-	return report
+	return u
 }
 
 // resolveTargets expands the raw target list into concrete URLs, resolving

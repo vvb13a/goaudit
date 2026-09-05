@@ -20,34 +20,6 @@ type Summary struct {
 	HighestSeverity Severity `json:"highest_severity"`
 }
 
-type Report struct {
-	URL        string        `json:"url"`
-	FinalURL   string        `json:"final_url"`
-	StatusCode int           `json:"status_code"`
-	Duration   time.Duration `json:"duration"`
-	Summary    Summary       `json:"summary"`
-	Issues     []Issue       `json:"issues"`
-}
-
-func (r *Report) CalculateSummary() {
-	r.Summary = Summary{
-		TotalCount:      len(r.Issues),
-		HighestSeverity: SeveritySuccess,
-	}
-
-	for _, issue := range r.Issues {
-		if issue.Passed {
-			r.Summary.PassedCount++
-		} else {
-			r.Summary.FailedCount++
-		}
-
-		if issue.Severity.IsHigherThan(r.Summary.HighestSeverity) {
-			r.Summary.HighestSeverity = issue.Severity
-		}
-	}
-}
-
 // Audit is a self-contained record of one audit run: it carries the run
 // configuration (Name, Targets and CheckNames) inline instead of referencing
 // reusable plans or checklists.
@@ -61,26 +33,27 @@ type Audit struct {
 	StartedAt   time.Time       `json:"started_at"`
 	Duration    time.Duration   `json:"duration"`
 	Summary     Summary         `json:"summary"`
-	Reports     []*Report       `json:"reports"`
+	Urls        []*AuditedUrl   `json:"urls"`
 }
 
+// CalculateSummary aggregates the per-URL verdicts into the audit summary.
+// It requires the per-URL UrlSummary values, which the persistence layer
+// computes when the run is stored.
 func (a *Audit) CalculateSummary() {
 	a.Summary = Summary{
-		TotalCount:      len(a.Reports),
+		TotalCount:      len(a.Urls),
 		HighestSeverity: SeveritySuccess,
 	}
 
-	for _, r := range a.Reports {
-		r.CalculateSummary()
-
-		if r.Summary.FailedCount == 0 {
+	for _, u := range a.Urls {
+		if u.Summary.FailedCount() == 0 {
 			a.Summary.PassedCount++
 		} else {
 			a.Summary.FailedCount++
 		}
 
-		if r.Summary.HighestSeverity.IsHigherThan(a.Summary.HighestSeverity) {
-			a.Summary.HighestSeverity = r.Summary.HighestSeverity
+		if u.Summary.HighestSeverity.IsHigherThan(a.Summary.HighestSeverity) {
+			a.Summary.HighestSeverity = u.Summary.HighestSeverity
 		}
 	}
 }

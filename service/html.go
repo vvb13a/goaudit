@@ -188,7 +188,7 @@ function fmtTS(iso) {
 }
 
 function page() {
-  var data = {name: 'Unknown', reports: []};
+  var data = {name: 'Unknown', urls: []};
   var el = document.getElementById('audit-data');
   if (el) {
     try { data = JSON.parse(el.textContent); } catch (e) { console.error('Failed to parse audit data', e); }
@@ -206,11 +206,11 @@ function page() {
     expanded: {},
     copiedKey: null,
 
-    reports: function () { return this.audit.reports || []; },
+    urls: function () { return this.audit.urls || []; },
 
     allIssues: function () {
       var out = [];
-      this.reports().forEach(function (r, ri) {
+      this.urls().forEach(function (r, ri) {
         (r.issues || []).forEach(function (iss, ii) {
           var copy = Object.assign({}, iss);
           copy.key = ri + ':' + ii;
@@ -254,14 +254,14 @@ function page() {
     },
 
     avgDurationMs: function () {
-      var reps = this.reports();
+      var reps = this.urls();
       if (!reps.length) return 0;
       var sum = reps.reduce(function (acc, r) { return acc + (r.duration || 0); }, 0);
       return Math.round((sum / reps.length) / 1e6);
     },
 
     failedEndpointsCount: function () {
-      return this.reports().filter(function (r) {
+      return this.urls().filter(function (r) {
         return (r.issues || []).some(function (i) { return !i.passed; });
       }).length;
     },
@@ -376,7 +376,7 @@ function page() {
           </button>
           <button @click="activeTab = 'endpoints'" :class="activeTab === 'endpoints' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'" class="px-3.5 py-1.5 rounded-lg transition flex items-center gap-1.5">
             <span>URLs</span>
-            <span class="bg-slate-800 text-slate-300 rounded-full px-1.5 py-0.2 text-[10px]" x-text="reports().length"></span>
+            <span class="bg-slate-800 text-slate-300 rounded-full px-1.5 py-0.2 text-[10px]" x-text="urls().length"></span>
           </button>
         </div>
 
@@ -417,7 +417,7 @@ function page() {
         <!-- Endpoints Scanned -->
         <div class="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-5">
           <div class="text-xs uppercase font-bold tracking-wider text-slate-400">Endpoints Audited</div>
-          <div class="text-3xl font-extrabold mt-1 text-white" x-text="reports().length"></div>
+          <div class="text-3xl font-extrabold mt-1 text-white" x-text="urls().length"></div>
           <div class="text-xs text-rose-400 mt-1 font-semibold" x-text="failedEndpointsCount() + ' URLs have issues'"></div>
         </div>
 
@@ -637,7 +637,7 @@ function page() {
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-800/60 font-mono">
-              <template x-for="(r, idx) in reports()" :key="idx">
+              <template x-for="(r, idx) in urls()" :key="idx">
                 <tr class="hover:bg-slate-800/30 transition">
                   <td class="p-3.5">
                     <span class="px-2 py-0.5 rounded-full font-bold text-[10px]"
