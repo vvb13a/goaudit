@@ -28,7 +28,7 @@ type Deps struct {
 type ViewID int
 
 const (
-	AuditsView ViewID = iota
+	DashboardView ViewID = iota
 	IssuesView
 	UrlsView
 	EditAuditView
@@ -59,7 +59,7 @@ type Model struct {
 	nav           NavModel
 	footer        FooterModel
 	notifications NotificationModel
-	audits        AuditsModel
+	dashboard     DashboardModel
 	auditUrls     AuditUrlsModel
 	auditEdit     AuditEditModel
 	auditChecks   AuditChecksModel
@@ -89,7 +89,7 @@ type Model struct {
 	cycleActive bool
 	lastQuietAt time.Time
 
-	auditsSized      bool
+	dashboardSized   bool
 	auditUrlsSized   bool
 	auditIssuesSized bool
 	auditEditSized   bool
@@ -101,7 +101,7 @@ func New(deps Deps) Model {
 	return Model{
 		deps: deps,
 		nav: NewNavModel([]Tab{
-			{ID: AuditsView, Label: "Audit"},
+			{ID: DashboardView, Label: "Dashboard"},
 			{ID: IssuesView, Label: "Issues"},
 			{ID: UrlsView, Label: "URLs"},
 			{ID: EditAuditView, Label: "Edit"},
@@ -110,7 +110,7 @@ func New(deps Deps) Model {
 		}),
 		footer:        NewFooterModel(),
 		notifications: NewNotificationModel(),
-		audits:        NewAuditsModel(deps),
+		dashboard:     NewDashboardModel(deps),
 		auditUrls:     NewAuditUrlsModel(deps),
 		auditEdit:     NewAuditEditModel(deps),
 		auditChecks:   NewAuditChecksModel(deps),
@@ -141,8 +141,8 @@ func (m Model) activateCmd() tea.Cmd {
 
 	sized := false
 	switch m.nav.Active() {
-	case AuditsView:
-		sized = m.auditsSized
+	case DashboardView:
+		sized = m.dashboardSized
 	case UrlsView:
 		sized = m.auditUrlsSized
 	case IssuesView:
@@ -187,8 +187,8 @@ func (m Model) activateCmd() tea.Cmd {
 
 func (m Model) markViewSized() {
 	switch m.nav.Active() {
-	case AuditsView:
-		m.auditsSized = true
+	case DashboardView:
+		m.dashboardSized = true
 	case UrlsView:
 		m.auditUrlsSized = true
 	case IssuesView:
@@ -207,8 +207,8 @@ func (m Model) markViewSized() {
 // keep navigation out of their forms so keys stay usable for editing.
 func (m Model) viewIsRoot() bool {
 	switch m.nav.Active() {
-	case AuditsView:
-		return m.audits.NavigationEnabled()
+	case DashboardView:
+		return m.dashboard.NavigationEnabled()
 	case UrlsView:
 		return m.auditUrls.NavigationEnabled()
 	case IssuesView:
@@ -298,7 +298,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.switcherOpen {
 				return m.closeSwitcher(), nil
 			}
-			if !m.audits.Running() {
+			if !m.dashboard.Running() {
 				return m.openSwitcher(), nil
 			}
 			return m, nil
@@ -325,7 +325,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// (Tab cycles their fields, so it cannot leave the view).
 			switch m.nav.Active() {
 			case EditAuditView, ChecksView:
-				return m.goToView(AuditsView)
+				return m.goToView(DashboardView)
 			}
 		}
 
@@ -374,9 +374,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch m.nav.Active() {
-	case AuditsView:
+	case DashboardView:
 		var cmd tea.Cmd
-		m.audits, cmd = m.audits.Update(msg)
+		m.dashboard, cmd = m.dashboard.Update(msg)
 		return m, cmd
 	case UrlsView:
 		var cmd tea.Cmd
@@ -435,7 +435,7 @@ func (m Model) pushNotification(n Notification) Model {
 // refreshes the switcher list and navigates to the audit view.
 func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
 	m = m.closeSwitcher()
-	m.audits = m.audits.finishRun()
+	m.dashboard = m.dashboard.finishRun()
 
 	var notification Notification
 	switch {
@@ -443,7 +443,7 @@ func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
 		notification = Notification{Kind: NotificationDanger, Text: fmt.Sprintf("Audit failed: %v", msg.err)}
 	case msg.audit != nil:
 		m = m.setTenant(msg.audit.ID, msg.audit.Name)
-		m.audits = m.audits.showTenant(msg.audit)
+		m.dashboard = m.dashboard.showTenant(msg.audit)
 		notification = Notification{
 			Kind: NotificationSuccess,
 			Text: fmt.Sprintf("Audit '%s' finished: %d endpoints in %v",
@@ -469,8 +469,8 @@ func (m Model) helpText() string {
 
 func (m Model) activeViewHelp() string {
 	switch m.nav.Active() {
-	case AuditsView:
-		return m.audits.Help()
+	case DashboardView:
+		return m.dashboard.Help()
 	case UrlsView:
 		return m.auditUrls.Help()
 	case IssuesView:
@@ -606,8 +606,8 @@ func (m Model) View() string {
 
 func (m Model) activeViewContent() string {
 	switch m.nav.Active() {
-	case AuditsView:
-		return m.audits.View()
+	case DashboardView:
+		return m.dashboard.View()
 	case UrlsView:
 		return m.auditUrls.View()
 	case IssuesView:

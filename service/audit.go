@@ -59,7 +59,7 @@ func (s *AuditService) Create(ctx context.Context, a *domain.Audit) error {
 
 	a.CalculateSummary()
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(store.AuditModel(a)).Error; err != nil {
 			return fmt.Errorf("insert audit: %w", err)
 		}
@@ -74,7 +74,11 @@ func (s *AuditService) Create(ctx context.Context, a *domain.Audit) error {
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+
+	return s.captureSnapshot(ctx, a.ID)
 }
 
 // ReplaceRun persists a rerun of an existing audit without creating a new
@@ -90,7 +94,7 @@ func (s *AuditService) Create(ctx context.Context, a *domain.Audit) error {
 func (s *AuditService) ReplaceRun(ctx context.Context, a *domain.Audit) error {
 	now := time.Now().UTC()
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Capture the previous state of the audit before replacing the rows.
 		var previous []store.Issue
 		if err := tx.Where("audit_id = ?", a.ID).Find(&previous).Error; err != nil {
@@ -190,6 +194,27 @@ func (s *AuditService) ReplaceRun(ctx context.Context, a *domain.Audit) error {
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	return s.captureSnapshot(ctx, a.ID)
+}
+
+// captureSnapshot stores the dashboard state of the audit as a new snapshot
+// row after a run. The snapshot is read back through GetByID so it matches
+// exactly what the dashboard shows, including URL rows kept as missing from
+// earlier runs.
+func (s *AuditService) captureSnapshot(ctx context.Context, auditID string) error {
+	a, err := s.GetByID(ctx, auditID)
+	if err != nil {
+		return fmt.Errorf("load audit for snapshot: %w", err)
+	}
+	snap := domain.NewAuditSnapshot(a, time.Now().UTC())
+	if err := s.db.WithContext(ctx).Create(store.AuditSnapshotModel(&snap)).Error; err != nil {
+		return fmt.Errorf("insert audit snapshot: %w", err)
+	}
+	return nil
 }
 
 // applyIssueTransition rotates the stored severity into prior_severity and

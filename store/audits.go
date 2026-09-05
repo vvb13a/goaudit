@@ -25,6 +25,7 @@ type Audit struct {
 	FailedCount     int64     `gorm:"column:failed_count"`
 	SkippedCount    int64     `gorm:"column:skipped_count;not null;default:0"`
 	HighestSeverity string    `gorm:"column:highest_severity;type:text;not null"`
+	Score           float64   `gorm:"column:score;type:real;not null;default:0"`
 }
 
 func (Audit) TableName() string { return "audits" }
@@ -44,6 +45,7 @@ func AuditModel(a *domain.Audit) *Audit {
 		FailedCount:     int64(a.Summary.FailedCount),
 		SkippedCount:    int64(a.Summary.SkippedCount),
 		HighestSeverity: string(a.Summary.HighestSeverity),
+		Score:           a.Summary.Score,
 	}
 }
 
@@ -63,6 +65,7 @@ func (m *Audit) ToDomain() *domain.Audit {
 			FailedCount:     int(m.FailedCount),
 			SkippedCount:    int(m.SkippedCount),
 			HighestSeverity: domain.Severity(m.HighestSeverity),
+			Score:           m.Score,
 		},
 	}
 }

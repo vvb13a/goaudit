@@ -173,6 +173,7 @@ func (s *ExcelService) writeSummary(f *excelize.File, a *domain.Audit, titleStyl
 		{"Audit ID", a.ID},
 		{"Started", formatTimestamp(a.StartedAt)},
 		{"Duration", a.Duration.Round(time.Millisecond).String()},
+		{"Score", fmt.Sprintf("%.1f", a.Summary.Score)},
 		{"Endpoints audited", fmt.Sprintf("%d", len(a.Urls))},
 		{"Failed endpoints", fmt.Sprintf("%d", a.Summary.FailedCount)},
 	}

@@ -76,7 +76,7 @@ func (m Model) handleTenantDeleted(msg tenantDeletedMsg) (tea.Model, tea.Cmd) {
 
 	if msg.id == m.tenantID {
 		m.setTenant("", "")
-		m.audits = m.audits.clearTenant()
+		m.dashboard = m.dashboard.clearTenant()
 		m.auditUrls = m.auditUrls.Track("")
 		m.auditEdit = m.auditEdit.Track("")
 		m.auditChecks = m.auditChecks.Track("")
@@ -161,15 +161,15 @@ func (m Model) handleSwitcherKey(key tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 	case "n":
 		m.switcherOpen = false
-		m.audits = m.audits.beginNewAudit()
-		m.nav = m.nav.Select(AuditsView)
+		m.dashboard = m.dashboard.beginNewAudit()
+		m.nav = m.nav.Select(DashboardView)
 		return m, m.activateCmd()
 	case "r":
 		if t := m.selTenant(); t != nil {
 			m.switcherOpen = false
-			m.nav = m.nav.Select(AuditsView)
+			m.nav = m.nav.Select(DashboardView)
 			var cmd tea.Cmd
-			m.audits, cmd = m.audits.startRerun(t)
+			m.dashboard, cmd = m.dashboard.startRerun(t)
 			return m, cmd
 		}
 		return m, nil
@@ -199,10 +199,10 @@ func (m Model) switchToTenant(t *domain.Audit) (Model, tea.Cmd) {
 	m.tenantPicked = true
 	m.switcherOpen = false
 	m.switcherConfirm = nil
-	m.nav = m.nav.Select(AuditsView)
+	m.nav = m.nav.Select(DashboardView)
 
 	var cmd tea.Cmd
-	m.audits, cmd = m.audits.openDetail(t.ID)
+	m.dashboard, cmd = m.dashboard.openDetail(t.ID)
 	return m, cmd
 }
 
@@ -269,4 +269,90 @@ func (m Model) switcherHelp() string {
 		return "y: Delete  •  any other key: Cancel"
 	}
 	return "↑/↓: Move  •  Enter: Open  •  n: New Audit  •  r: Rerun  •  d: Delete  •  e: Excel  •  w: HTML  •  Esc: Close"
+}
+
+// ---- Exports ----
+
+// exportExcelCmd hydrates the full audit (reports with issues), renders it
+// into an Excel workbook (reusing an existing one instead of regenerating)
+// and opens the workbook with the default xlsx viewer.
+func exportExcelCmd(deps Deps, a *domain.Audit) tea.Cmd {
+	return func() tea.Msg {
+		if deps.ExcelService == nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: "Excel export is not available",
+			}}
+		}
+
+		full, err := deps.AuditService.GetByID(context.Background(), a.ID)
+		if err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Export failed: %v", err),
+			}}
+		}
+
+		path, err := deps.ExcelService.ExportAudit(full)
+		if err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Export failed: %v", err),
+			}}
+		}
+
+		if err := openWithDefaultApp(path); err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Failed to open '%s': %v", path, err),
+			}}
+		}
+
+		return notifyMsg{notification: Notification{
+			Kind: NotificationSuccess,
+			Text: fmt.Sprintf("Opened audit workbook %s", path),
+		}}
+	}
+}
+
+// exportHTMLCmd hydrates the full audit (reports with issues), renders it
+// into an HTML report (reusing an existing one instead of regenerating) and
+// opens the report in the default browser.
+func exportHTMLCmd(deps Deps, a *domain.Audit) tea.Cmd {
+	return func() tea.Msg {
+		if deps.HtmlService == nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: "HTML report is not available",
+			}}
+		}
+
+		full, err := deps.AuditService.GetByID(context.Background(), a.ID)
+		if err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Export failed: %v", err),
+			}}
+		}
+
+		path, err := deps.HtmlService.ExportAudit(full)
+		if err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Export failed: %v", err),
+			}}
+		}
+
+		if err := openWithDefaultApp(path); err != nil {
+			return notifyMsg{notification: Notification{
+				Kind: NotificationDanger,
+				Text: fmt.Sprintf("Failed to open '%s': %v", path, err),
+			}}
+		}
+
+		return notifyMsg{notification: Notification{
+			Kind: NotificationSuccess,
+			Text: fmt.Sprintf("Opened audit report %s", path),
+		}}
+	}
 }

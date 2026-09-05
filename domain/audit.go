@@ -18,6 +18,7 @@ type Summary struct {
 	FailedCount     int      `json:"failed_count"`
 	SkippedCount    int      `json:"skipped_count"`
 	HighestSeverity Severity `json:"highest_severity"`
+	Score           float64  `json:"score"`
 }
 
 // Audit is a self-contained record of one audit run: it carries the run
@@ -38,13 +39,15 @@ type Audit struct {
 
 // CalculateSummary aggregates the per-URL verdicts into the audit summary.
 // It requires the per-URL UrlSummary values, which the persistence layer
-// computes when the run is stored.
+// computes when the run is stored. The audit score is the mean of the
+// per-URL scores.
 func (a *Audit) CalculateSummary() {
 	a.Summary = Summary{
 		TotalCount:      len(a.Urls),
 		HighestSeverity: SeveritySuccess,
 	}
 
+	var scoreSum float64
 	for _, u := range a.Urls {
 		if u.Summary.FailedCount() == 0 {
 			a.Summary.PassedCount++
@@ -55,6 +58,10 @@ func (a *Audit) CalculateSummary() {
 		if u.Summary.HighestSeverity.IsHigherThan(a.Summary.HighestSeverity) {
 			a.Summary.HighestSeverity = u.Summary.HighestSeverity
 		}
+		scoreSum += u.Summary.Score
+	}
+	if n := len(a.Urls); n > 0 {
+		a.Summary.Score = scoreSum / float64(n)
 	}
 }
 
