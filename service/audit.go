@@ -380,6 +380,25 @@ func (s *AuditService) List(ctx context.Context, filter domain.AuditFilter) ([]*
 	return audits, nil
 }
 
+// ListSnapshots returns the newest run snapshots of the audit, newest
+// first, capped at limit.
+func (s *AuditService) ListSnapshots(ctx context.Context, auditID string, limit int) ([]*domain.AuditSnapshot, error) {
+	var models []store.AuditSnapshot
+	query := s.db.WithContext(ctx).Where("audit_id = ?", auditID).Order("created_at DESC").Order("rowid DESC")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	if err := query.Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("list audit snapshots: %w", err)
+	}
+
+	snapshots := make([]*domain.AuditSnapshot, 0, len(models))
+	for i := range models {
+		snapshots = append(snapshots, models[i].ToDomain())
+	}
+	return snapshots, nil
+}
+
 func (s *AuditService) Delete(ctx context.Context, id string) error {
 	// Remove the exported workbooks and reports before the database row so
 	// that a failed cleanup leaves the audit fully intact instead of

@@ -455,7 +455,14 @@ func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
 	m = m.pushNotification(notification)
 
 	m.nav = m.nav.Select(msg.target)
-	return m, tea.Batch(m.loadTenantsCmd(), m.activateCmd())
+
+	// Refresh the dashboard data so its previous-run deltas compare the
+	// fresh run against the one before it.
+	cmds := []tea.Cmd{m.loadTenantsCmd(), m.activateCmd()}
+	if msg.audit != nil {
+		cmds = append(cmds, m.dashboard.loadCmd(msg.audit.ID))
+	}
+	return m, tea.Batch(cmds...)
 }
 
 // helpText picks the footer help: the switcher help while its overlay is
