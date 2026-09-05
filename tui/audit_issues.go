@@ -322,6 +322,70 @@ func (m AuditIssuesModel) detailText(row *issueRow, width int) []string {
 	return out
 }
 
+// widgetMetric is one stat box of a summary widget: a label above a colored
+// value.
+type widgetMetric struct {
+	label string
+	value string
+	color lipgloss.Color
+}
+
+// metricsWidget renders one stat box per metric across the full width, four
+// lines tall: top border, label, value and bottom border. Boxes share the
+// width equally with one-column gaps. It returns an empty string when the
+// width cannot fit the boxes.
+func metricsWidget(metrics []widgetMetric, width int) string {
+	if len(metrics) == 0 {
+		return ""
+	}
+	gap := 1
+	usable := width - gap*(len(metrics)-1)
+	if usable < len(metrics)*4 {
+		return ""
+	}
+	base := usable / len(metrics)
+	rem := usable % len(metrics)
+
+	rows := make([]strings.Builder, 4)
+	border := lipgloss.NewStyle().Foreground(lipgloss.Color("#565f89"))
+	numStyle := lipgloss.NewStyle().Bold(true)
+	labelStyleRow := lipgloss.NewStyle().Foreground(lipgloss.Color("#9aa4b2")).Bold(true)
+
+	for i, mt := range metrics {
+		w := base
+		if i < rem {
+			w++
+		}
+		inner := w - 2
+		if inner < 3 {
+			inner = 3
+		}
+
+		top := border.Render("┌" + strings.Repeat("─", inner) + "┐")
+		bottom := border.Render("└" + strings.Repeat("─", inner) + "┘")
+
+		label := labelStyleRow.Render(clipCell(mt.label, inner))
+		value := numStyle.Foreground(mt.color).Render(clipCell(mt.value, inner))
+
+		rows[0].WriteString(top)
+		rows[1].WriteString(centerCell(label, inner))
+		rows[2].WriteString(centerCell(value, inner))
+		rows[3].WriteString(bottom)
+
+		if i < len(metrics)-1 {
+			for r := 0; r < 4; r++ {
+				rows[r].WriteString(" ")
+			}
+		}
+	}
+
+	out := make([]string, 4)
+	for r := 0; r < 4; r++ {
+		out[r] = clipToWidth(rows[r].String(), width)
+	}
+	return strings.Join(out, "\n")
+}
+
 // severityWidget renders one stat box per severity type across the full
 // width, counting the issues currently listed by the table.
 func (m AuditIssuesModel) severityWidget() string {
@@ -348,54 +412,15 @@ func (m AuditIssuesModel) severityWidget() string {
 		counts[row.issue.Severity]++
 	}
 
-	gap := 1
-	usable := m.width - gap*(len(boxes)-1)
-	if usable < len(boxes)*4 {
-		return ""
+	metrics := make([]widgetMetric, 0, len(boxes))
+	for _, bx := range boxes {
+		metrics = append(metrics, widgetMetric{
+			label: bx.label,
+			value: fmt.Sprintf("%d", counts[bx.sev]),
+			color: issueSeverityColor(bx.sev),
+		})
 	}
-	base := usable / len(boxes)
-	rem := usable % len(boxes)
-
-	rows := make([]strings.Builder, 4)
-	border := lipgloss.NewStyle().Foreground(lipgloss.Color("#565f89"))
-	numStyle := lipgloss.NewStyle().Bold(true)
-	labelStyleRow := lipgloss.NewStyle().Foreground(lipgloss.Color("#9aa4b2")).Bold(true)
-
-	for i, bx := range boxes {
-		w := base
-		if i < rem {
-			w++
-		}
-		inner := w - 2
-		if inner < 3 {
-			inner = 3
-		}
-		count := fmt.Sprintf("%d", counts[bx.sev])
-		color := issueSeverityColor(bx.sev)
-
-		top := border.Render("┌" + strings.Repeat("─", inner) + "┐")
-		bottom := border.Render("└" + strings.Repeat("─", inner) + "┘")
-
-		label := labelStyleRow.Render(clipCell(bx.label, inner))
-		value := numStyle.Foreground(color).Render(clipCell(count, inner))
-
-		rows[0].WriteString(top)
-		rows[1].WriteString(centerCell(label, inner))
-		rows[2].WriteString(centerCell(value, inner))
-		rows[3].WriteString(bottom)
-
-		if i < len(boxes)-1 {
-			for r := 0; r < 4; r++ {
-				rows[r].WriteString(" ")
-			}
-		}
-	}
-
-	out := make([]string, 4)
-	for r := 0; r < 4; r++ {
-		out[r] = clipToWidth(rows[r].String(), m.width)
-	}
-	return strings.Join(out, "\n")
+	return metricsWidget(metrics, m.width)
 }
 
 // centerCell centers a (possibly styled) value inside a box content row
