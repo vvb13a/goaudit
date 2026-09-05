@@ -33,7 +33,7 @@ const (
 	UrlsView
 	EditAuditView
 	ChecksView
-	HistoryView
+	TimelineView
 )
 
 // viewSizeMsg replays the content dimensions to a view that just became
@@ -64,7 +64,7 @@ type Model struct {
 	auditEdit     AuditEditModel
 	auditChecks   AuditChecksModel
 	auditIssues   AuditIssuesModel
-	history       HistoryModel
+	timeline      TimelineModel
 	width         int
 	height        int
 
@@ -94,7 +94,7 @@ type Model struct {
 	auditIssuesSized bool
 	auditEditSized   bool
 	auditChecksSized bool
-	historySized     bool
+	timelineSized    bool
 }
 
 func New(deps Deps) Model {
@@ -106,7 +106,7 @@ func New(deps Deps) Model {
 			{ID: UrlsView, Label: "URLs"},
 			{ID: EditAuditView, Label: "Edit"},
 			{ID: ChecksView, Label: "Checks"},
-			{ID: HistoryView, Label: "History"},
+			{ID: TimelineView, Label: "Timeline"},
 		}),
 		footer:        NewFooterModel(),
 		notifications: NewNotificationModel(),
@@ -115,7 +115,7 @@ func New(deps Deps) Model {
 		auditEdit:     NewAuditEditModel(deps),
 		auditChecks:   NewAuditChecksModel(deps),
 		auditIssues:   NewAuditIssuesModel(deps),
-		history:       NewHistoryModel(),
+		timeline:      NewTimelineModel(deps),
 	}
 }
 
@@ -151,8 +151,8 @@ func (m Model) activateCmd() tea.Cmd {
 		sized = m.auditEditSized
 	case ChecksView:
 		sized = m.auditChecksSized
-	case HistoryView:
-		sized = m.historySized
+	case TimelineView:
+		sized = m.timelineSized
 	}
 
 	if m.width > 0 && !sized {
@@ -168,6 +168,8 @@ func (m Model) activateCmd() tea.Cmd {
 			cmds = append(cmds, m.auditUrls.loadCmd(m.tenantID))
 		case IssuesView:
 			cmds = append(cmds, m.auditIssues.loadCmd(m.tenantID))
+		case TimelineView:
+			cmds = append(cmds, m.timeline.loadCmd(m.tenantID))
 		case EditAuditView:
 			cmds = append(cmds, m.auditEdit.loadCmd(m.tenantID))
 		case ChecksView:
@@ -197,8 +199,8 @@ func (m Model) markViewSized() {
 		m.auditEditSized = true
 	case ChecksView:
 		m.auditChecksSized = true
-	case HistoryView:
-		m.historySized = true
+	case TimelineView:
+		m.timelineSized = true
 	}
 }
 
@@ -217,8 +219,8 @@ func (m Model) viewIsRoot() bool {
 		return m.auditEdit.NavigationEnabled()
 	case ChecksView:
 		return m.auditChecks.NavigationEnabled()
-	case HistoryView:
-		return m.history.NavigationEnabled()
+	case TimelineView:
+		return m.timeline.NavigationEnabled()
 	}
 	return false
 }
@@ -233,6 +235,8 @@ func (m Model) goToView(id ViewID) (Model, tea.Cmd) {
 			m.auditUrls = m.auditUrls.Track(m.tenantID)
 		case IssuesView:
 			m.auditIssues = m.auditIssues.Track(m.tenantID)
+		case TimelineView:
+			m.timeline = m.timeline.Track(m.tenantID)
 		case EditAuditView:
 			m.auditEdit = m.auditEdit.Track(m.tenantID)
 		case ChecksView:
@@ -394,9 +398,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.auditChecks, cmd = m.auditChecks.Update(msg)
 		return m, cmd
-	case HistoryView:
+	case TimelineView:
 		var cmd tea.Cmd
-		m.history, cmd = m.history.Update(msg)
+		m.timeline, cmd = m.timeline.Update(msg)
 		return m, cmd
 	}
 	return m, nil
@@ -422,12 +426,9 @@ func (m Model) handleAuditConfigSaved(msg auditConfigSavedMsg) (tea.Model, tea.C
 	return m, m.loadTenantsCmd()
 }
 
-// pushNotification records a notification in the header bar and appends it
-// to the session history, keeping both in sync for every notification
-// source.
+// pushNotification records a notification in the header bar.
 func (m Model) pushNotification(n Notification) Model {
 	m.notifications = m.notifications.Push(n)
-	m.history = m.history.Push(n)
 	return m
 }
 
@@ -486,8 +487,8 @@ func (m Model) activeViewHelp() string {
 		return m.auditEdit.Help()
 	case ChecksView:
 		return m.auditChecks.Help()
-	case HistoryView:
-		return m.history.Help()
+	case TimelineView:
+		return m.timeline.Help()
 	}
 	return ""
 }
@@ -623,8 +624,8 @@ func (m Model) activeViewContent() string {
 		return m.auditEdit.View()
 	case ChecksView:
 		return m.auditChecks.View()
-	case HistoryView:
-		return m.history.View()
+	case TimelineView:
+		return m.timeline.View()
 	}
 	return ""
 }
