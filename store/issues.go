@@ -78,7 +78,6 @@ func (m *Issue) ToDomain() *domain.Issue {
 		CheckName: m.CheckName,
 		Category:  domain.Category(m.Category),
 		Severity:  domain.Severity(m.Severity),
-		Passed:    !domain.Severity(m.Severity).IsFailure(),
 		Message:   m.Message,
 		Lifecycle: domain.IssueLifecycle(m.Lifecycle),
 		CreatedAt: m.CreatedAt,

@@ -71,7 +71,7 @@ func NewAuditSnapshot(a *Audit, at time.Time) AuditSnapshot {
 		TotalURLs:   len(a.Urls),
 		TotalIssues: issues,
 		TotalChecks: snapshotCheckCount(a),
-		Score:       a.Summary.Score,
+		Score:       a.Score,
 	}
 
 	// URL states.

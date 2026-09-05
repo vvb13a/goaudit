@@ -20,7 +20,6 @@ func NewPassIssue(check Check, message string) Issue {
 		CheckName: info.Name,
 		Category:  info.Category,
 		Severity:  SeveritySuccess,
-		Passed:    true,
 		Message:   message,
 	}
 }
@@ -37,7 +36,6 @@ func NewFailIssue(check Check, severity Severity, message string, details map[st
 		CheckName: info.Name,
 		Category:  info.Category,
 		Severity:  severity,
-		Passed:    !severity.IsFailure(),
 		Message:   message,
 		Details:   details,
 	}

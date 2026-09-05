@@ -166,6 +166,15 @@ func (s *ExcelService) build(a *domain.Audit) (f *excelize.File, err error) {
 }
 
 func (s *ExcelService) writeSummary(f *excelize.File, a *domain.Audit, titleStyle, labelStyle int) error {
+	// Endpoints of the latest run with at least one failing issue. URL rows
+	// kept as missing are not part of the latest run and are skipped.
+	failedEndpoints := 0
+	for _, u := range a.Urls {
+		if u.State != domain.UrlStateMissing && u.Summary.FailedCount() > 0 {
+			failedEndpoints++
+		}
+	}
+
 	meta := [][2]string{
 		{"Name", a.Name},
 		{"Targets", fmt.Sprintf("%d URL(s)", len(a.Targets))},
@@ -173,9 +182,9 @@ func (s *ExcelService) writeSummary(f *excelize.File, a *domain.Audit, titleStyl
 		{"Audit ID", a.ID},
 		{"Started", formatTimestamp(a.StartedAt)},
 		{"Duration", a.Duration.Round(time.Millisecond).String()},
-		{"Score", fmt.Sprintf("%.1f", a.Summary.Score)},
+		{"Score", fmt.Sprintf("%.1f", a.Score)},
 		{"Endpoints audited", fmt.Sprintf("%d", len(a.Urls))},
-		{"Failed endpoints", fmt.Sprintf("%d", a.Summary.FailedCount)},
+		{"Failed endpoints", fmt.Sprintf("%d", failedEndpoints)},
 	}
 	if strings.TrimSpace(a.Description) != "" {
 		meta = append(meta, [2]string{"Description", a.Description})
@@ -306,9 +315,9 @@ func (s *ExcelService) writeIssues(f *excelize.File, a *domain.Audit, headerStyl
 	for _, rep := range a.Urls {
 		sorted := sortedIssues(rep.Issues)
 		for _, iss := range sorted {
-			status := "FAILED"
-			if iss.Passed {
-				status = "PASSED"
+			status := "PASSED"
+			if iss.Severity.IsFailure() {
+				status = "FAILED"
 			}
 			evidence := ""
 			if len(iss.Details) > 0 {

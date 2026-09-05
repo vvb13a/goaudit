@@ -166,6 +166,13 @@ var SEVMAP = (function () {
   return m;
 })();
 
+// sevPass reports whether an issue of the given severity is a pass:
+// failures are severity warning and worse.
+function sevPass(key) {
+  var sev = SEVMAP[key] || SEVS[4];
+  return sev.w < 30;
+}
+
 function clip(s, n) {
   s = s || '';
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
@@ -218,6 +225,7 @@ function page() {
           copy.url = r.url;
           copy.finalUrl = r.final_url || r.url;
           copy.httpStatus = r.status_code;
+          copy.passed = sevPass(iss.severity);
           out.push(copy);
         });
       });
@@ -262,7 +270,7 @@ function page() {
 
     failedEndpointsCount: function () {
       return this.urls().filter(function (r) {
-        return (r.issues || []).some(function (i) { return !i.passed; });
+        return (r.issues || []).some(function (i) { return !sevPass(i.severity); });
       }).length;
     },
 

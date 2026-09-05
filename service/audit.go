@@ -57,7 +57,7 @@ func (s *AuditService) Create(ctx context.Context, a *domain.Audit) error {
 		}
 	}
 
-	a.CalculateSummary()
+	a.CalculateScore()
 
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(store.AuditModel(a)).Error; err != nil {
@@ -159,7 +159,7 @@ func (s *AuditService) ReplaceRun(ctx context.Context, a *domain.Audit) error {
 			}
 		}
 
-		a.CalculateSummary()
+		a.CalculateScore()
 
 		if err := tx.Save(store.AuditModel(a)).Error; err != nil {
 			return fmt.Errorf("update audit: %w", err)
@@ -358,10 +358,6 @@ func (s *AuditService) UpdateConfig(ctx context.Context, id, name, description s
 
 func (s *AuditService) List(ctx context.Context, filter domain.AuditFilter) ([]*domain.Audit, error) {
 	query := s.db.WithContext(ctx).Model(&store.Audit{}).Order("started_at DESC")
-
-	if filter.HighestSeverity != nil && filter.HighestSeverity.IsValid() {
-		query = query.Where("highest_severity = ?", string(*filter.HighestSeverity))
-	}
 
 	limit := 50
 	if filter.Limit > 0 {

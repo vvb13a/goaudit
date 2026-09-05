@@ -119,7 +119,8 @@ func scorePenalty(severity Severity) float64 {
 	}
 }
 
-// Calculate derives the summary from the given issues.
+// Calculate derives the summary from the given issues. Only failing issues
+// (severity warning and worse) deduct from the score.
 func (s *UrlSummary) Calculate(issues []Issue) {
 	counts := SeverityCounts{}
 	highest := SeveritySuccess
@@ -128,7 +129,7 @@ func (s *UrlSummary) Calculate(issues []Issue) {
 	for i := range issues {
 		iss := &issues[i]
 		counts.add(iss.Severity)
-		if !iss.Passed {
+		if iss.Severity.IsFailure() {
 			score -= scorePenalty(iss.Severity)
 		}
 		if iss.Severity.IsHigherThan(highest) {

@@ -12,18 +12,10 @@ var (
 	ErrAuditInProgress = errors.New("audit is currently running")
 )
 
-type Summary struct {
-	TotalCount      int      `json:"total_count"`
-	PassedCount     int      `json:"passed_count"`
-	FailedCount     int      `json:"failed_count"`
-	SkippedCount    int      `json:"skipped_count"`
-	HighestSeverity Severity `json:"highest_severity"`
-	Score           float64  `json:"score"`
-}
-
 // Audit is a self-contained record of one audit run: it carries the run
 // configuration (Name, Targets and CheckNames) inline instead of referencing
-// reusable plans or checklists.
+// reusable plans or checklists. Score is the overall 0-100 health score of
+// the run, derived from the per-URL scores when the run is persisted.
 type Audit struct {
 	ID          string          `json:"id"`
 	Name        string          `json:"name"`
@@ -33,40 +25,24 @@ type Audit struct {
 	Config      json.RawMessage `json:"config,omitempty"`
 	StartedAt   time.Time       `json:"started_at"`
 	Duration    time.Duration   `json:"duration"`
-	Summary     Summary         `json:"summary"`
+	Score       float64         `json:"score"`
 	Urls        []*AuditedUrl   `json:"urls"`
 }
 
-// CalculateSummary aggregates the per-URL verdicts into the audit summary.
-// It requires the per-URL UrlSummary values, which the persistence layer
-// computes when the run is stored. The audit score is the mean of the
-// per-URL scores.
-func (a *Audit) CalculateSummary() {
-	a.Summary = Summary{
-		TotalCount:      len(a.Urls),
-		HighestSeverity: SeveritySuccess,
-	}
-
-	var scoreSum float64
+// CalculateScore derives the audit score from the per-URL scores. It
+// requires the per-URL UrlSummary values, which the persistence layer
+// computes when the run is stored.
+func (a *Audit) CalculateScore() {
+	var sum float64
 	for _, u := range a.Urls {
-		if u.Summary.FailedCount() == 0 {
-			a.Summary.PassedCount++
-		} else {
-			a.Summary.FailedCount++
-		}
-
-		if u.Summary.HighestSeverity.IsHigherThan(a.Summary.HighestSeverity) {
-			a.Summary.HighestSeverity = u.Summary.HighestSeverity
-		}
-		scoreSum += u.Summary.Score
+		sum += u.Summary.Score
 	}
 	if n := len(a.Urls); n > 0 {
-		a.Summary.Score = scoreSum / float64(n)
+		a.Score = sum / float64(n)
 	}
 }
 
 type AuditFilter struct {
-	HighestSeverity *Severity
-	Limit           int
-	Offset          int
+	Limit  int
+	Offset int
 }

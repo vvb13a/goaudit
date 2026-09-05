@@ -253,11 +253,7 @@ func (m Model) switcherView() string {
 		if i == m.switcherCursor {
 			marker = labelStyle.Render("> ")
 		}
-		sev := string(t.Summary.HighestSeverity)
-		if sev == "" {
-			sev = "-"
-		}
-		line := fmt.Sprintf("%s%s  %s  %s", marker, clipCell(t.Name, nameW), timeAgo(t.StartedAt, true), sev)
+		line := fmt.Sprintf("%s%s  %s  %s", marker, clipCell(t.Name, nameW), timeAgo(t.StartedAt, true), fmt.Sprintf("%.1f", t.Score))
 		b.WriteString(line)
 		b.WriteString("\n")
 	}

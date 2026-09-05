@@ -59,7 +59,6 @@ type Issue struct {
 	CheckName string         `json:"check_name"`
 	Category  Category       `json:"category"`
 	Severity  Severity       `json:"severity"`
-	Passed    bool           `json:"passed"`
 	Message   string         `json:"message"`
 	Details   map[string]any `json:"details,omitempty"`
 
@@ -72,8 +71,10 @@ type Issue struct {
 	UpdatedAt     time.Time      `json:"updated_at,omitempty"`
 }
 
+// IsFailure reports whether the issue is a failing one: severity warning and
+// worse. Issues at lower severities are passes by construction.
 func (i Issue) IsFailure() bool {
-	return !i.Passed && i.Severity.IsFailure()
+	return i.Severity.IsFailure()
 }
 
 func NewRawIssue(checkName string, category Category, severity Severity, message string, details map[string]any) Issue {
@@ -81,7 +82,6 @@ func NewRawIssue(checkName string, category Category, severity Severity, message
 		CheckName: checkName,
 		Category:  category,
 		Severity:  severity,
-		Passed:    !severity.IsFailure(),
 		Message:   message,
 		Details:   details,
 	}

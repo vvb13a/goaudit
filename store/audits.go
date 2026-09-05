@@ -12,40 +12,30 @@ import (
 // Targets and CheckNames are JSON-encoded text columns and Config holds the
 // audit's engine configuration as a JSON object.
 type Audit struct {
-	ID              string    `gorm:"column:id;primaryKey;type:text"`
-	Name            string    `gorm:"column:name;type:text;not null"`
-	Description     string    `gorm:"column:description;type:text;not null;default:''"`
-	Targets         []string  `gorm:"column:targets;type:text;not null;default:'[]';serializer:json"`
-	CheckNames      []string  `gorm:"column:check_names;type:text;not null;default:'[]';serializer:json"`
-	Config          string    `gorm:"column:config;type:text;not null;default:'{}'"`
-	StartedAt       time.Time `gorm:"column:started_at;index:idx_audits_started_at,sort:desc"`
-	DurationMs      int64     `gorm:"column:duration_ms"`
-	TotalEndpoints  int64     `gorm:"column:total_endpoints"`
-	PassedCount     int64     `gorm:"column:passed_count"`
-	FailedCount     int64     `gorm:"column:failed_count"`
-	SkippedCount    int64     `gorm:"column:skipped_count;not null;default:0"`
-	HighestSeverity string    `gorm:"column:highest_severity;type:text;not null"`
-	Score           float64   `gorm:"column:score;type:real;not null;default:0"`
+	ID          string    `gorm:"column:id;primaryKey;type:text"`
+	Name        string    `gorm:"column:name;type:text;not null"`
+	Description string    `gorm:"column:description;type:text;not null;default:''"`
+	Targets     []string  `gorm:"column:targets;type:text;not null;default:'[]';serializer:json"`
+	CheckNames  []string  `gorm:"column:check_names;type:text;not null;default:'[]';serializer:json"`
+	Config      string    `gorm:"column:config;type:text;not null;default:'{}'"`
+	StartedAt   time.Time `gorm:"column:started_at;index:idx_audits_started_at,sort:desc"`
+	DurationMs  int64     `gorm:"column:duration_ms"`
+	Score       float64   `gorm:"column:score;type:real;not null;default:0"`
 }
 
 func (Audit) TableName() string { return "audits" }
 
 func AuditModel(a *domain.Audit) *Audit {
 	return &Audit{
-		ID:              a.ID,
-		Name:            a.Name,
-		Description:     a.Description,
-		Targets:         a.Targets,
-		CheckNames:      a.CheckNames,
-		Config:          auditConfigString(a.Config),
-		StartedAt:       a.StartedAt,
-		DurationMs:      a.Duration.Milliseconds(),
-		TotalEndpoints:  int64(a.Summary.TotalCount),
-		PassedCount:     int64(a.Summary.PassedCount),
-		FailedCount:     int64(a.Summary.FailedCount),
-		SkippedCount:    int64(a.Summary.SkippedCount),
-		HighestSeverity: string(a.Summary.HighestSeverity),
-		Score:           a.Summary.Score,
+		ID:          a.ID,
+		Name:        a.Name,
+		Description: a.Description,
+		Targets:     a.Targets,
+		CheckNames:  a.CheckNames,
+		Config:      auditConfigString(a.Config),
+		StartedAt:   a.StartedAt,
+		DurationMs:  a.Duration.Milliseconds(),
+		Score:       a.Score,
 	}
 }
 
@@ -59,14 +49,7 @@ func (m *Audit) ToDomain() *domain.Audit {
 		Config:      auditConfigRaw(m.Config),
 		StartedAt:   m.StartedAt,
 		Duration:    time.Duration(m.DurationMs) * time.Millisecond,
-		Summary: domain.Summary{
-			TotalCount:      int(m.TotalEndpoints),
-			PassedCount:     int(m.PassedCount),
-			FailedCount:     int(m.FailedCount),
-			SkippedCount:    int(m.SkippedCount),
-			HighestSeverity: domain.Severity(m.HighestSeverity),
-			Score:           m.Score,
-		},
+		Score:       m.Score,
 	}
 }
 

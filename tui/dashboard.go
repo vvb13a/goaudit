@@ -680,13 +680,13 @@ func (m DashboardModel) overviewMetrics() []widgetMetric {
 		{label: "Total URLs", color: lipgloss.Color("#7aa2f7")},
 		{label: "Total Issues", color: lipgloss.Color("#9ece6a")},
 		{label: "Total Checks", color: lipgloss.Color("#e0af68")},
-		{label: "Score", color: auditScoreColor(m.audit.Summary.Score)},
+		{label: "Score", color: auditScoreColor(m.audit.Score)},
 	}
 	return metricsOf(boxes,
 		fmt.Sprintf("%d", len(m.audit.Urls)),
 		fmt.Sprintf("%d", m.totalIssues()),
 		fmt.Sprintf("%d", m.totalChecks()),
-		fmt.Sprintf("%.1f", m.audit.Summary.Score),
+		fmt.Sprintf("%.1f", m.audit.Score),
 	)
 }
 
