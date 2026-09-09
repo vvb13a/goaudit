@@ -14,45 +14,60 @@ import (
 	"github.com/vvb13a/goaudit/service"
 )
 
-// auditIssuesLoadedMsg carries the fully hydrated audit whose issues are
-// shown in the issues tab. id guards against stale responses.
-type auditIssuesLoadedMsg struct {
-	id    string
-	audit *domain.Audit
-	err   error
+// issuesPageSize is how many issue rows one page of the issues tab holds.
+// Browsing an audit never keeps more than a page resident: jumping loads the
+// requested page from the store and drops the previous one.
+const issuesPageSize = 250
+
+// issuesPageLoadedMsg carries one page of issues of the current audit
+// (tenant) together with the severity distribution of the whole filtered
+// list. auditID, offset and showAll guard against stale responses.
+type issuesPageLoadedMsg struct {
+	auditID     string
+	offset      int
+	showAll     bool
+	issues      []*domain.Issue
+	counts      domain.SeverityCounts
+	minSeverity domain.Severity
+	err         error
 }
 
-// issueRow flattens one issue of the audit together with the URL of the
-// report (page) it belongs to.
-type issueRow struct {
-	url   string
-	issue domain.Issue
-}
-
-// AuditIssuesModel lists every issue of the current audit (tenant) across
-// all its URLs in a 4/5 list, with the details of the selected issue in a 1/5
-// pane on the right. By default only real issues are shown — severity notice
-// and worse per the audit's "min_issue_severity" config — with a toggle to
-// show everything. A severity stat widget spans the top of the tab.
+// AuditIssuesModel lists the stored issues of the current audit (tenant) in
+// a 4/5 list, with the details of the selected issue in a 1/5 pane on the
+// right. Every row is one check result of the page it was checked against:
+// the URL column is the issue's own page URL. Issues are browsed in pages of
+// issuesPageSize rows that load on demand, so only one page is ever
+// resident. By default only real issues are shown — severity notice and
+// worse per the audit's "min_issue_severity" config — with a toggle to show
+// everything. A severity stat widget spans the top of the tab.
 type AuditIssuesModel struct {
 	deps    Deps
 	auditID string
 	loaded  bool
-	audit   *domain.Audit
-	rows    []issueRow
-	visible []issueRow
+	issues  []*domain.Issue
 	table   table.Model
 
 	minSeverity domain.Severity
 	showAll     bool
-	width       int
-	height      int
+	offset      int
+	total       int
+	counts      domain.SeverityCounts
+
+	// cursorTo and cursorToLast steer the table cursor of the page that is
+	// loading: crossing into a page from above lands on its last row, all
+	// other jumps land on its first row.
+	cursorTo     int
+	cursorToLast bool
+
+	width  int
+	height int
 }
 
 func NewAuditIssuesModel(deps Deps) AuditIssuesModel {
 	return AuditIssuesModel{
-		deps:  deps,
-		table: table.New(),
+		deps:     deps,
+		table:    table.New(),
+		cursorTo: -1,
 	}
 }
 
@@ -61,23 +76,82 @@ func (m AuditIssuesModel) NavigationEnabled() bool {
 	return true
 }
 
-// Track points the tab at the given audit and marks it stale so the next
-// activation reloads its issues.
+// Track points the tab at the given audit and resets it so the next
+// activation reloads its first page.
 func (m AuditIssuesModel) Track(id string) AuditIssuesModel {
 	if m.auditID != id {
-		m.loaded = false
-		m.audit = nil
-		m.rows = nil
-		m.visible = nil
+		m = m.release()
 	}
 	m.auditID = id
 	return m
 }
 
-func (m AuditIssuesModel) loadCmd(id string) tea.Cmd {
+// release drops the loaded page and counts so the memory is returned before
+// the tab sits in the background. The next activation reloads them.
+func (m AuditIssuesModel) release() AuditIssuesModel {
+	m.loaded = false
+	m.issues = nil
+	m.offset = 0
+	m.total = 0
+	m.counts = domain.SeverityCounts{}
+	m.showAll = false
+	m.cursorTo = -1
+	m.cursorToLast = false
+	m.table = table.New()
+	return m
+}
+
+// pageCount returns the number of pages of the filtered issue list.
+func (m AuditIssuesModel) pageCount() int {
+	if m.total <= 0 {
+		return 1
+	}
+	return (m.total-1)/issuesPageSize + 1
+}
+
+// clampOffset snaps a requested offset to the start of a page within the
+// filtered list.
+func (m AuditIssuesModel) clampOffset(offset int) int {
+	if m.total <= 0 {
+		return 0
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	last := ((m.total - 1) / issuesPageSize) * issuesPageSize
+	if offset > last {
+		return last
+	}
+	return offset
+}
+
+// loadCmd loads the page at the given offset for the current filter state.
+// The returned message carries the stored config threshold, the severity
+// distribution of the whole filtered list and the page rows.
+func (m AuditIssuesModel) loadCmd(offset int) tea.Cmd {
+	offset = m.clampOffset(offset)
 	return func() tea.Msg {
-		audit, err := m.deps.AuditService.GetByID(context.Background(), id)
-		return auditIssuesLoadedMsg{id: id, audit: audit, err: err}
+		cfg, err := m.deps.AuditService.GetConfig(context.Background(), m.auditID)
+		if err != nil {
+			return issuesPageLoadedMsg{auditID: m.auditID, offset: offset, showAll: m.showAll, err: err}
+		}
+		minSeverity := minIssueSeverity(cfg)
+		counts, err := m.deps.AuditService.IssueDistribution(context.Background(), m.auditID, minSeverity, m.showAll)
+		if err != nil {
+			return issuesPageLoadedMsg{auditID: m.auditID, offset: offset, showAll: m.showAll, err: err}
+		}
+		issues, err := m.deps.AuditService.ListIssuesPage(context.Background(), m.auditID, minSeverity, m.showAll, issuesPageSize, offset)
+		if err != nil {
+			return issuesPageLoadedMsg{auditID: m.auditID, offset: offset, showAll: m.showAll, err: err}
+		}
+		return issuesPageLoadedMsg{
+			auditID:     m.auditID,
+			offset:      offset,
+			showAll:     m.showAll,
+			issues:      issues,
+			counts:      counts,
+			minSeverity: minSeverity,
+		}
 	}
 }
 
@@ -89,18 +163,19 @@ func (m AuditIssuesModel) Update(msg tea.Msg) (AuditIssuesModel, tea.Cmd) {
 		m.rebuildTable()
 		return m, nil
 
-	case auditIssuesLoadedMsg:
-		if msg.id != m.auditID {
+	case issuesPageLoadedMsg:
+		if msg.auditID != m.auditID || msg.offset != m.offset || msg.showAll != m.showAll {
 			return m, nil
 		}
 		m.loaded = true
 		if msg.err != nil {
 			return m, NotifyDanger(fmt.Sprintf("Failed to load issues: %v", msg.err))
 		}
-		m.audit = msg.audit
-		m.minSeverity = minIssueSeverity(msg.audit)
-		m.showAll = false
-		m.rows = flattenIssues(msg.audit)
+		m.minSeverity = msg.minSeverity
+		m.issues = msg.issues
+		m.counts = msg.counts
+		m.total = msg.counts.Total()
+		m.offset = m.clampOffset(m.offset)
 		m.rebuildTable()
 		return m, nil
 
@@ -110,26 +185,58 @@ func (m AuditIssuesModel) Update(msg tea.Msg) (AuditIssuesModel, tea.Cmd) {
 			return m, tea.Quit
 		case "a":
 			m.showAll = !m.showAll
-			m.rebuildTable()
-			return m, nil
+			m.cursorTo, m.cursorToLast = 0, false
+			m.offset = 0
+			return m.jumpToPage(m.offset)
 		case "o":
-			if row := m.selRow(); row != nil {
-				url := row.issue.URL
-				if url == "" {
-					url = row.url
-				}
-				if url != "" {
-					return m, openInBrowserCmd(url)
-				}
+			if iss := m.selIssue(); iss != nil && iss.URL != "" {
+				return m, openInBrowserCmd(iss.URL)
 			}
 			return m, nil
 		case "r":
-			// Re-run the checks of the audited URL of the selected issue
-			// without a full audit run: no snapshot is recorded.
-			if row := m.selRow(); row != nil && row.url != "" {
-				return m, recheckURLCmd(m.deps, m.auditID, row.url)
+			// Re-run the checks of the audited URL that reached the page of
+			// the selected issue, without a full audit run: no snapshot is
+			// recorded.
+			if iss := m.selIssue(); iss != nil && iss.URL != "" {
+				return m, recheckPageCmd(m.deps, m.auditID, iss.URL)
 			}
 			return m, nil
+		case "n", "pgdown":
+			if m.offset+issuesPageSize < m.total {
+				return m.jumpToPage(m.offset + issuesPageSize)
+			}
+			return m, nil
+		case "p", "pgup":
+			if m.offset > 0 {
+				return m.jumpToPage(m.offset - issuesPageSize)
+			}
+			return m, nil
+		case "g":
+			if m.offset > 0 {
+				return m.jumpToPage(0)
+			}
+			return m, nil
+		case "G":
+			last := m.clampOffset(m.total)
+			if m.offset == last {
+				return m, nil
+			}
+			m.cursorTo = -1
+			m.cursorToLast = true
+			m.offset = last
+			return m, m.loadCmd(m.offset)
+		case "down", "j":
+			// Crossing the last row of a page moves into the next one, so
+			// scrolling feels continuous while only one page is resident.
+			if cur := m.table.Cursor(); len(m.issues) > 0 && cur == len(m.issues)-1 && m.offset+len(m.issues) < m.total {
+				return m.jumpToPage(m.offset + issuesPageSize)
+			}
+		case "up", "k":
+			if cur := m.table.Cursor(); cur == 0 && m.offset > 0 {
+				m.cursorTo = -1
+				m.cursorToLast = true
+				return m, m.loadCmd(m.offset - issuesPageSize)
+			}
 		}
 	}
 
@@ -138,36 +245,21 @@ func (m AuditIssuesModel) Update(msg tea.Msg) (AuditIssuesModel, tea.Cmd) {
 	return m, cmd
 }
 
-// minIssueSeverity resolves the tab's filter threshold from the audit's
-// stored config, falling back to notice.
-func minIssueSeverity(a *domain.Audit) domain.Severity {
-	cfg := service.MergeConfig(*service.DefaultConfig(), a.Config)
-	sev, err := domain.ParseSeverity(cfg.MinIssueSeverity)
-	if err != nil {
-		return domain.SeverityNotice
-	}
-	return sev
+// jumpToPage moves the list to the start of the given page and loads it,
+// keeping the previous page visible until the new one arrives.
+func (m AuditIssuesModel) jumpToPage(offset int) (AuditIssuesModel, tea.Cmd) {
+	m.cursorTo, m.cursorToLast = 0, false
+	m.offset = m.clampOffset(offset)
+	return m, m.loadCmd(m.offset)
 }
 
-// flattenIssues collects every issue of the audit with the URL of the report
-// it belongs to.
-func flattenIssues(a *domain.Audit) []issueRow {
-	var rows []issueRow
-	for _, rep := range a.Urls {
-		for _, iss := range rep.Issues {
-			rows = append(rows, issueRow{url: rep.URL, issue: iss})
-		}
-	}
-	return rows
-}
-
-// selRow returns the issue under the table cursor.
-func (m AuditIssuesModel) selRow() *issueRow {
+// selIssue returns the issue under the table cursor.
+func (m AuditIssuesModel) selIssue() *domain.Issue {
 	idx := m.table.Cursor()
-	if idx < 0 || idx >= len(m.visible) {
+	if idx < 0 || idx >= len(m.issues) {
 		return nil
 	}
-	return &m.visible[idx]
+	return m.issues[idx]
 }
 
 // ---- Rendering ----
@@ -179,8 +271,11 @@ func (m AuditIssuesModel) View() string {
 	if !m.loaded {
 		return "Loading issues..."
 	}
-	if len(m.rows) == 0 {
-		return centerLines(helpStyle.Render("No issues for this audit."), m.width)
+	if m.total == 0 {
+		if m.showAll {
+			return centerLines(helpStyle.Render("No issues for this audit."), m.width)
+		}
+		return centerLines(helpStyle.Render("No issues at or above "+string(m.minSeverity)+". Press 'a' to show all."), m.width)
 	}
 
 	var b strings.Builder
@@ -188,8 +283,42 @@ func (m AuditIssuesModel) View() string {
 		b.WriteString(widget)
 		b.WriteString("\n\n")
 	}
+	if status := m.pageStatus(); status != "" {
+		b.WriteString(status)
+		b.WriteString("\n\n")
+	}
 	b.WriteString(m.splitView())
 	return b.String()
+}
+
+// pageStatus renders the position of the current page inside the whole
+// filtered list.
+func (m AuditIssuesModel) pageStatus() string {
+	if m.width < 60 {
+		return ""
+	}
+	first := m.offset + 1
+	last := m.offset + len(m.issues)
+	label := fmt.Sprintf("Rows %d–%d of %d", first, last, m.total)
+	if m.pageCount() > 1 {
+		label += fmt.Sprintf("  •  Page %d/%d", m.offset/issuesPageSize+1, m.pageCount())
+	}
+	return helpStyle.Render(label)
+}
+
+// leadLines returns how many lines the widget and page status occupy above
+// the split panes. The rendered view and the table geometry must agree on
+// this so the boxed panes exactly fill the remaining height.
+func (m AuditIssuesModel) leadLines() int {
+	lines := 0
+	if m.width >= 60 {
+		if m.loaded && m.total > 0 {
+			lines = 5 + 2 // severity widget rows + blank, status line + blank
+		} else {
+			lines = 5 // severity widget rows + blank
+		}
+	}
+	return lines
 }
 
 // splitView renders the issues table on the left (4/5 of the width) and the
@@ -203,11 +332,7 @@ func (m AuditIssuesModel) splitView() string {
 	}
 	rightTotal := m.width - leftTotal
 
-	extra := 0
-	if m.width >= 60 {
-		extra = 5 // 4 widget rows + one blank line
-	}
-	boxH := m.height - extra
+	boxH := m.height - m.leadLines()
 	if boxH < 3 {
 		boxH = 3
 	}
@@ -260,11 +385,11 @@ func (m AuditIssuesModel) paneView(content string, w, height int) string {
 // detailPaneLines renders the details of the selected issue wrapped and
 // padded to exactly height lines of the given width.
 func (m AuditIssuesModel) detailPaneLines(innerW, height int) string {
-	row := m.selRow()
-	if row == nil {
+	iss := m.selIssue()
+	if iss == nil {
 		return ""
 	}
-	lines := m.detailText(row, innerW)
+	lines := m.detailText(iss, innerW)
 	for len(lines) < height {
 		lines = append(lines, "")
 	}
@@ -278,8 +403,7 @@ func (m AuditIssuesModel) detailPaneLines(innerW, height int) string {
 }
 
 // detailText renders the fields of one issue, soft-wrapped to the width.
-func (m AuditIssuesModel) detailText(row *issueRow, width int) []string {
-	iss := &row.issue
+func (m AuditIssuesModel) detailText(iss *domain.Issue, width int) []string {
 	var out []string
 	add := func(s string) { out = append(out, s) }
 
@@ -295,14 +419,7 @@ func (m AuditIssuesModel) detailText(row *issueRow, width int) []string {
 	if iss.PriorSeverity != "" {
 		add(fmt.Sprintf("Prior:     %s", iss.PriorSeverity))
 	}
-	pageURL := iss.URL
-	if pageURL == "" {
-		pageURL = row.url
-	}
-	add("URL:       " + pageURL)
-	if row.url != "" && row.url != pageURL {
-		add("Target:    " + row.url)
-	}
+	add("URL:       " + iss.URL)
 	add("")
 	add("Message:")
 	for _, l := range strings.Split(wrapText(iss.Message, width), "\n") {
@@ -394,7 +511,7 @@ func metricsWidget(metrics []widgetMetric, width int) string {
 }
 
 // severityWidget renders one stat box per severity type across the full
-// width, counting the issues currently listed by the table.
+// width, counting the issues of the current filter.
 func (m AuditIssuesModel) severityWidget() string {
 	const minWidgetWidth = 60
 	if m.width < minWidgetWidth {
@@ -414,16 +531,26 @@ func (m AuditIssuesModel) severityWidget() string {
 		{domain.SeveritySuccess, "PASS"},
 	}
 
-	counts := make(map[domain.Severity]int)
-	for _, row := range m.visible {
-		counts[row.issue.Severity]++
-	}
-
 	metrics := make([]widgetMetric, 0, len(boxes))
 	for _, bx := range boxes {
+		count := 0
+		switch bx.sev {
+		case domain.SeverityFatal:
+			count = m.counts.Fatal
+		case domain.SeverityError:
+			count = m.counts.Error
+		case domain.SeverityWarning:
+			count = m.counts.Warning
+		case domain.SeverityNotice:
+			count = m.counts.Notice
+		case domain.SeverityInfo:
+			count = m.counts.Info
+		case domain.SeveritySuccess:
+			count = m.counts.Success
+		}
 		metrics = append(metrics, widgetMetric{
 			label: bx.label,
-			value: fmt.Sprintf("%d", counts[bx.sev]),
+			value: fmt.Sprintf("%d", count),
 			color: issueSeverityColor(bx.sev),
 		})
 	}
@@ -445,25 +572,19 @@ func centerCell(value string, inner int) string {
 	return "│" + strings.Repeat(" ", pad) + value + strings.Repeat(" ", right) + "│"
 }
 
-// visibleRows applies the severity filter: without showAll only issues at or
-// above the configured minimum severity are listed.
-func (m AuditIssuesModel) visibleRows() []issueRow {
-	if m.showAll || m.minSeverity == "" {
-		return m.rows
+// minIssueSeverity resolves the tab's filter threshold from the audit's
+// stored config, falling back to notice.
+func minIssueSeverity(a *domain.Audit) domain.Severity {
+	cfg := service.MergeConfig(*service.DefaultConfig(), a.Config)
+	sev, err := domain.ParseSeverity(cfg.MinIssueSeverity)
+	if err != nil {
+		return domain.SeverityNotice
 	}
-	minW := m.minSeverity.Weight()
-	var out []issueRow
-	for _, row := range m.rows {
-		if row.issue.Severity.Weight() >= minW {
-			out = append(out, row)
-		}
-	}
-	return out
+	return sev
 }
 
 func (m *AuditIssuesModel) rebuildTable() {
-	m.visible = m.visibleRows()
-	visible := m.visible
+	visible := m.issues
 
 	split := m.width >= 110
 	leftTotal := m.width
@@ -505,33 +626,44 @@ func (m *AuditIssuesModel) rebuildTable() {
 
 	rows := make([]table.Row, 0, len(visible))
 
-	// When every listed URL shares one host, show only the path so the
-	// repeated domain does not eat the URL column.
+	// When every listed issue's page shares one host, show only the path so
+	// the repeated domain does not eat the URL column. The host is derived
+	// from the loaded page, so it is consistent within the page.
 	urls := make([]string, 0, len(visible))
-	for _, row := range visible {
-		urls = append(urls, row.url)
+	for _, iss := range visible {
+		urls = append(urls, iss.URL)
 	}
 	host, shared := sharedHost(urls)
 
-	for _, row := range visible {
+	for _, iss := range visible {
 		rows = append(rows, table.Row{
-			string(row.issue.Severity),
-			lifecycleLabel(row.issue.Lifecycle),
-			clipCell(row.issue.CheckName, checkW-1),
-			clipCell(row.issue.Category.DisplayName(), catW-1),
-			clipCell(displayURL(row.url, host, shared), urlW-1),
-			clipCell(row.issue.Message, msgW-1),
+			string(iss.Severity),
+			lifecycleLabel(iss.Lifecycle),
+			clipCell(iss.CheckName, checkW-1),
+			clipCell(iss.Category.DisplayName(), catW-1),
+			clipCell(displayURL(iss.URL, host, shared), urlW-1),
+			clipCell(iss.Message, msgW-1),
 		})
 	}
 
 	height := m.contentRows()
+
 	cursor := m.table.Cursor()
-	if cursor >= len(rows) {
+	switch {
+	case m.cursorToLast && len(rows) > 0:
 		cursor = len(rows) - 1
+	case m.cursorTo >= 0:
+		cursor = m.cursorTo
+	default:
+		if cursor >= len(rows) {
+			cursor = len(rows) - 1
+		}
 	}
 	if cursor < 0 {
 		cursor = 0
 	}
+	m.cursorTo = -1
+	m.cursorToLast = false
 
 	t := table.New(
 		table.WithColumns(columns),
@@ -546,14 +678,10 @@ func (m *AuditIssuesModel) rebuildTable() {
 }
 
 // contentRows is the number of rows available inside the split panes: the
-// terminal height minus the severity widget block (when wide enough) minus
-// the two box border rows.
+// terminal height minus the severity widget and page status (when shown)
+// minus the two box border rows.
 func (m AuditIssuesModel) contentRows() int {
-	extra := 0
-	if m.width >= 60 {
-		extra = 5 // 4 widget rows + one blank line
-	}
-	h := m.height - extra - 2
+	h := m.height - m.leadLines() - 2
 	if m.height <= 0 {
 		return 10
 	}
@@ -574,6 +702,9 @@ func lifecycleLabel(lc domain.IssueLifecycle) string {
 func (m AuditIssuesModel) Help() string {
 	if m.auditID == "" {
 		return "Ctrl+O: Audits"
+	}
+	if m.pageCount() > 1 {
+		return "↑/↓: Issue  •  n/p: Page  •  g/G: First/Last  •  r: Recheck URL  •  a: Toggle All  •  o: Open URL  •  Ctrl+O: Audits  •  q: Quit"
 	}
 	return "↑/↓: Issue  •  r: Recheck URL  •  a: Toggle All  •  o: Open URL  •  Ctrl+O: Audits  •  q: Quit"
 }

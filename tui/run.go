@@ -88,21 +88,39 @@ type urlRecheckedMsg struct {
 // an audit snapshot, so the timeline stays untouched.
 func recheckURLCmd(deps Deps, auditID, targetURL string) tea.Cmd {
 	return func() tea.Msg {
-		audit, err := deps.AuditService.GetConfig(context.Background(), auditID)
-		if err != nil {
-			return urlRecheckedMsg{auditID: auditID, url: targetURL, err: err}
-		}
-		checks, err := deps.Registry.Resolve(audit.CheckNames)
-		if err != nil {
-			return urlRecheckedMsg{auditID: auditID, url: targetURL, err: err}
-		}
-		cfg := effectiveConfig(deps, audit.Config)
+		return runURLRecheck(deps, auditID, targetURL)
+	}
+}
 
-		u, err := deps.Runner.AuditURL(context.Background(), targetURL, checks, cfg)
+// recheckPageCmd re-runs the checks of the audited URL that reached the
+// given page (the page URL of an issue). Pages that were reached through a
+// redirect resolve to their audited target before the recheck runs.
+func recheckPageCmd(deps Deps, auditID, pageURL string) tea.Cmd {
+	return func() tea.Msg {
+		target, err := deps.AuditService.ResolveRecheckTarget(context.Background(), auditID, pageURL)
 		if err != nil {
-			return urlRecheckedMsg{auditID: auditID, url: targetURL, err: err}
+			return urlRecheckedMsg{auditID: auditID, url: pageURL, err: err}
 		}
-		err = deps.AuditService.ApplyURLRecheck(context.Background(), auditID, u)
+		return runURLRecheck(deps, auditID, target)
+	}
+}
+
+// runURLRecheck executes the shared recheck body for one audited target URL.
+func runURLRecheck(deps Deps, auditID, targetURL string) tea.Msg {
+	audit, err := deps.AuditService.GetConfig(context.Background(), auditID)
+	if err != nil {
 		return urlRecheckedMsg{auditID: auditID, url: targetURL, err: err}
 	}
+	checks, err := deps.Registry.Resolve(audit.CheckNames)
+	if err != nil {
+		return urlRecheckedMsg{auditID: auditID, url: targetURL, err: err}
+	}
+	cfg := effectiveConfig(deps, audit.Config)
+
+	u, err := deps.Runner.AuditURL(context.Background(), targetURL, checks, cfg)
+	if err != nil {
+		return urlRecheckedMsg{auditID: auditID, url: targetURL, err: err}
+	}
+	err = deps.AuditService.ApplyURLRecheck(context.Background(), auditID, u)
+	return urlRecheckedMsg{auditID: auditID, url: targetURL, err: err}
 }

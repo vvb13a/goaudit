@@ -69,6 +69,15 @@ func (m TimelineModel) loadCmd(id string) tea.Cmd {
 	}
 }
 
+// release drops the loaded snapshots so the memory is returned before the
+// tab sits in the background. The next activation reloads them.
+func (m TimelineModel) release() TimelineModel {
+	m.loaded = false
+	m.snapshots = nil
+	m.table = table.New()
+	return m
+}
+
 func (m TimelineModel) Update(msg tea.Msg) (TimelineModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:

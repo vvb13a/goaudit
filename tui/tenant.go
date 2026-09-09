@@ -201,6 +201,12 @@ func (m Model) switchToTenant(t *domain.Audit) (Model, tea.Cmd) {
 	m.switcherConfirm = nil
 	m.nav = m.nav.Select(DashboardView)
 
+	// Release the list views of the previous tenant so their loaded pages
+	// are not kept resident while browsing the new audit.
+	m = m.releaseView(UrlsView)
+	m = m.releaseView(IssuesView)
+	m = m.releaseView(TimelineView)
+
 	var cmd tea.Cmd
 	m.dashboard, cmd = m.dashboard.openDetail(t.ID)
 	return m, cmd

@@ -160,9 +160,9 @@ func (m Model) activateCmd() tea.Cmd {
 		case DashboardView:
 			cmds = append(cmds, m.dashboard.loadCmd(m.tenantID))
 		case UrlsView:
-			cmds = append(cmds, m.auditUrls.loadCmd(m.tenantID))
+			cmds = append(cmds, m.auditUrls.loadCmd(m.auditUrls.offset))
 		case IssuesView:
-			cmds = append(cmds, m.auditIssues.loadCmd(m.tenantID))
+			cmds = append(cmds, m.auditIssues.loadCmd(m.auditIssues.offset))
 		case TimelineView:
 			cmds = append(cmds, m.timeline.loadCmd(m.tenantID))
 		case ConfigView:
@@ -214,9 +214,28 @@ func (m Model) viewIsRoot() bool {
 	return false
 }
 
-// goToView activates the given top-level view, tracking the current tenant in
-// the audit views and returning their activation commands.
+// releaseView drops the loaded data of the given view so a tab that sits in
+// the background does not keep its rows resident. Re-activation reloads it.
+func (m Model) releaseView(id ViewID) Model {
+	switch id {
+	case DashboardView:
+		m.dashboard = m.dashboard.release()
+	case UrlsView:
+		m.auditUrls = m.auditUrls.release()
+	case IssuesView:
+		m.auditIssues = m.auditIssues.release()
+	case TimelineView:
+		m.timeline = m.timeline.release()
+	}
+	return m
+}
+
+// goToView activates the given top-level view, releasing the view being left
+// and tracking the current tenant in the audit views.
 func (m Model) goToView(id ViewID) (Model, tea.Cmd) {
+	if m.nav.Active() != id {
+		m = m.releaseView(m.nav.Active())
+	}
 	m.nav = m.nav.Select(id)
 	if m.tenantID != "" {
 		switch id {
@@ -434,6 +453,9 @@ func (m Model) handleAuditCreated(msg auditCreatedMsg) (tea.Model, tea.Cmd) {
 	m = m.setTenant(a.ID, a.Name)
 	m.tenantPicked = true
 	m.nav = m.nav.Select(DashboardView)
+	m = m.releaseView(UrlsView)
+	m = m.releaseView(IssuesView)
+	m = m.releaseView(TimelineView)
 
 	var cmd tea.Cmd
 	m.dashboard, cmd = m.dashboard.openDetail(a.ID)
@@ -465,9 +487,9 @@ func (m Model) handleURLRechecked(msg urlRecheckedMsg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.dashboard.loadCmd(m.tenantID))
 		switch m.nav.Active() {
 		case UrlsView:
-			cmds = append(cmds, m.auditUrls.loadCmd(m.tenantID))
+			cmds = append(cmds, m.auditUrls.loadCmd(m.auditUrls.offset))
 		case IssuesView:
-			cmds = append(cmds, m.auditIssues.loadCmd(m.tenantID))
+			cmds = append(cmds, m.auditIssues.loadCmd(m.auditIssues.offset))
 		}
 	}
 	switch len(cmds) {
@@ -487,7 +509,9 @@ func (m Model) pushNotification(n Notification) Model {
 }
 
 // handleRunComplete promotes the finished audit to the current tenant,
-// refreshes the switcher list and navigates to the audit view.
+// refreshes the switcher list and navigates to the audit view. The run's
+// in-memory audit is only used for the notification; the dashboard reads
+// its metrics back from the store so the message is not retained.
 func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
 	m = m.closeSwitcher()
 	m.dashboard = m.dashboard.finishRun()
@@ -498,7 +522,6 @@ func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
 		notification = Notification{Kind: NotificationDanger, Text: fmt.Sprintf("Audit failed: %v", msg.err)}
 	case msg.audit != nil:
 		m = m.setTenant(msg.audit.ID, msg.audit.Name)
-		m.dashboard = m.dashboard.showTenant(msg.audit)
 		notification = Notification{
 			Kind: NotificationSuccess,
 			Text: fmt.Sprintf("Audit '%s' finished: %d endpoints in %v",
@@ -511,9 +534,10 @@ func (m Model) handleRunComplete(msg runCompleteMsg) (tea.Model, tea.Cmd) {
 
 	m.nav = m.nav.Select(msg.target)
 
-	// The activation command reloads the dashboard data of the active view,
-	// so the previous-run deltas compare the fresh run against the one
-	// before it.
+	// Drop the views of the previous tenant and let the activation command
+	// load the fresh run's metrics: the deltas compare the new run against
+	// the snapshot of the run before it.
+	m.dashboard, _ = m.dashboard.openDetail(m.tenantID)
 	return m, tea.Batch(m.loadTenantsCmd(), m.activateCmd())
 }
 

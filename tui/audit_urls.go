@@ -16,12 +16,30 @@ import (
 	"github.com/vvb13a/goaudit/domain"
 )
 
-// auditUrlsLoadedMsg carries the fully hydrated audit whose audited URLs are
-// shown in the urls tab. id guards against stale responses.
-type auditUrlsLoadedMsg struct {
-	id    string
-	audit *domain.Audit
-	err   error
+// urlsPageSize is how many audited URL rows one page of the urls tab holds.
+// Browsing an audit never keeps more than a page of URL rows resident; the
+// issues of the selected URL are fetched on demand.
+const urlsPageSize = 100
+
+// urlsPageLoadedMsg carries one page of audited URLs of the current audit
+// (tenant) together with the aggregate state backing the summary widget.
+// auditID and offset guard against stale responses.
+type urlsPageLoadedMsg struct {
+	auditID string
+	offset  int
+	urls    []*domain.AuditedUrl
+	total   int
+	agg     *domain.URLAggregates
+	err     error
+}
+
+// urlIssuesLoadedMsg carries the issues of the audited URL selected in the
+// urls tab. auditID and url guard against stale responses.
+type urlIssuesLoadedMsg struct {
+	auditID string
+	url     string
+	issues  []*domain.Issue
+	err     error
 }
 
 // Focused panes of the urls view: the audited URLs and the issues of the
@@ -31,25 +49,38 @@ const (
 	paneUrlIssues
 )
 
-// AuditUrlsModel renders every audited URL of the current audit (tenant) in
-// a master/detail split: each URL with its duration, state, highest severity
+// AuditUrlsModel renders the audited URLs of the current audit (tenant) in a
+// master/detail split: each URL with its duration, state, highest severity
 // and score in the left pane, the issues of the selected URL (check,
 // category, severity, lifecycle and message) in the middle pane, and the
-// evidence of the selected issue in the right pane. The panes take 2/5,
-// 2/5 and 1/5 of the width.
+// evidence of the selected issue in the right pane. URLs are browsed in
+// pages that load on demand and the issues of the selected URL are fetched
+// when it is selected, so only one page plus one URL's issues are resident.
+// The panes take 2/5, 2/5 and 1/5 of the width.
 type AuditUrlsModel struct {
 	deps    Deps
 	auditID string
 	loaded  bool
-	audit   *domain.Audit
 
-	urls      []*domain.AuditedUrl
-	urlTable  table.Model
-	urlIdx    int
-	issues    []domain.Issue
-	issueTab  table.Model
-	issueIdx  int
-	focusPane int
+	urls   []*domain.AuditedUrl // the current page
+	agg    *domain.URLAggregates
+	total  int
+	offset int
+
+	urlTable table.Model
+	urlIdx   int
+
+	issues        []domain.Issue
+	issuesLoading bool
+	issueTab      table.Model
+	issueIdx      int
+	focusPane     int
+
+	// cursorTo and cursorToLast steer the table cursor of the page that is
+	// loading: crossing into a page from above lands on its last row, all
+	// other jumps land on its first row.
+	cursorTo     int
+	cursorToLast bool
 
 	width  int
 	height int
@@ -61,6 +92,7 @@ func NewAuditUrlsModel(deps Deps) AuditUrlsModel {
 		urlTable:  table.New(),
 		issueTab:  table.New(),
 		focusPane: paneUrls,
+		cursorTo:  -1,
 	}
 }
 
@@ -69,27 +101,82 @@ func (m AuditUrlsModel) NavigationEnabled() bool {
 	return true
 }
 
-// Track points the tab at the given audit and marks it stale so the next
-// activation reloads its URLs.
+// Track points the tab at the given audit and resets it so the next
+// activation reloads its first page.
 func (m AuditUrlsModel) Track(id string) AuditUrlsModel {
 	if m.auditID != id {
-		m.loaded = false
-		m.audit = nil
-		m.urls = nil
-		m.issues = nil
-		m.urlIdx = 0
-		m.issueIdx = 0
-		m.urlTable = table.New()
-		m.issueTab = table.New()
+		m = m.release()
 	}
 	m.auditID = id
 	return m
 }
 
-func (m AuditUrlsModel) loadCmd(id string) tea.Cmd {
+// release drops the loaded page, aggregates and issues so the memory is
+// returned before the tab sits in the background. The next activation
+// reloads them.
+func (m AuditUrlsModel) release() AuditUrlsModel {
+	m.loaded = false
+	m.urls = nil
+	m.agg = nil
+	m.total = 0
+	m.offset = 0
+	m.urlIdx = 0
+	m.issueIdx = 0
+	m.issues = nil
+	m.issuesLoading = false
+	m.cursorTo = -1
+	m.cursorToLast = false
+	m.urlTable = table.New()
+	m.issueTab = table.New()
+	return m
+}
+
+// pageCount returns the number of pages of the audited URL list.
+func (m AuditUrlsModel) pageCount() int {
+	if m.total <= 0 {
+		return 1
+	}
+	return (m.total-1)/urlsPageSize + 1
+}
+
+// clampOffset snaps a requested offset to the start of a page within the
+// audited URL list.
+func (m AuditUrlsModel) clampOffset(offset int) int {
+	if m.total <= 0 {
+		return 0
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	last := ((m.total - 1) / urlsPageSize) * urlsPageSize
+	if offset > last {
+		return last
+	}
+	return offset
+}
+
+// loadCmd loads the URL page at the given offset together with the URL
+// aggregates of the audit.
+func (m AuditUrlsModel) loadCmd(offset int) tea.Cmd {
+	offset = m.clampOffset(offset)
 	return func() tea.Msg {
-		audit, err := m.deps.AuditService.GetByID(context.Background(), id)
-		return auditUrlsLoadedMsg{id: id, audit: audit, err: err}
+		agg, err := m.deps.AuditService.URLAggregates(context.Background(), m.auditID)
+		if err != nil {
+			return urlsPageLoadedMsg{auditID: m.auditID, offset: offset, err: err}
+		}
+		urls, total, err := m.deps.AuditService.ListURLsPage(context.Background(), m.auditID, urlsPageSize, offset)
+		if err != nil {
+			return urlsPageLoadedMsg{auditID: m.auditID, offset: offset, err: err}
+		}
+		return urlsPageLoadedMsg{auditID: m.auditID, offset: offset, urls: urls, total: total, agg: agg}
+	}
+}
+
+// issuesLoadCmd loads the issues of the given audited URL of the audit.
+func (m AuditUrlsModel) issuesLoadCmd(url string) tea.Cmd {
+	return func() tea.Msg {
+		issues, err := m.deps.AuditService.URLIssues(context.Background(), m.auditID, url)
+		return urlIssuesLoadedMsg{auditID: m.auditID, url: url, issues: issues, err: err}
 	}
 }
 
@@ -101,20 +188,48 @@ func (m AuditUrlsModel) Update(msg tea.Msg) (AuditUrlsModel, tea.Cmd) {
 		m.rebuildTables()
 		return m, nil
 
-	case auditUrlsLoadedMsg:
-		if msg.id != m.auditID {
+	case urlsPageLoadedMsg:
+		if msg.auditID != m.auditID || msg.offset != m.offset {
 			return m, nil
 		}
 		m.loaded = true
 		if msg.err != nil {
 			return m, NotifyDanger(fmt.Sprintf("Failed to load URLs: %v", msg.err))
 		}
-		m.audit = msg.audit
-		m.urls = msg.audit.Urls
+		m.urls = msg.urls
+		m.agg = msg.agg
+		m.total = msg.total
+		m.offset = m.clampOffset(m.offset)
 		if m.urlIdx >= len(m.urls) {
+			m.urlIdx = len(m.urls) - 1
+		}
+		if m.urlIdx < 0 {
 			m.urlIdx = 0
 		}
 		m.rebuildTables()
+		if u := m.selURL(); u != nil {
+			m.issues = nil
+			m.issuesLoading = true
+			return m, m.issuesLoadCmd(u.URL)
+		}
+		return m, nil
+
+	case urlIssuesLoadedMsg:
+		if msg.auditID != m.auditID {
+			return m, nil
+		}
+		if u := m.selURL(); u == nil || u.URL != msg.url {
+			return m, nil
+		}
+		m.issuesLoading = false
+		if msg.err != nil {
+			return m, NotifyDanger(fmt.Sprintf("Failed to load issues: %v", msg.err))
+		}
+		m.issues = make([]domain.Issue, 0, len(msg.issues))
+		for _, iss := range msg.issues {
+			m.issues = append(m.issues, *iss)
+		}
+		m.rebuildIssueTable()
 		return m, nil
 
 	case tea.KeyMsg:
@@ -151,6 +266,43 @@ func (m AuditUrlsModel) Update(msg tea.Msg) (AuditUrlsModel, tea.Cmd) {
 					return m, recheckURLCmd(m.deps, m.auditID, u.URL)
 				}
 				return m, nil
+			case "n", "pgdown":
+				if m.offset+urlsPageSize < m.total {
+					return m.jumpToPage(m.offset + urlsPageSize)
+				}
+				return m, nil
+			case "p", "pgup":
+				if m.offset > 0 {
+					return m.jumpToPage(m.offset - urlsPageSize)
+				}
+				return m, nil
+			case "g":
+				if m.offset > 0 {
+					return m.jumpToPage(0)
+				}
+				return m, nil
+			case "G":
+				last := m.clampOffset(m.total)
+				if m.offset == last {
+					return m, nil
+				}
+				m.cursorTo = -1
+				m.cursorToLast = true
+				m.offset = last
+				return m, m.loadCmd(m.offset)
+			case "down", "j":
+				// Crossing the last row of a page moves into the next one,
+				// so scrolling feels continuous while only one page of URLs
+				// is resident.
+				if cur := m.urlTable.Cursor(); len(m.urls) > 0 && cur == len(m.urls)-1 && m.offset+len(m.urls) < m.total {
+					return m.jumpToPage(m.offset + urlsPageSize)
+				}
+			case "up", "k":
+				if cur := m.urlTable.Cursor(); cur == 0 && m.offset > 0 {
+					m.cursorTo = -1
+					m.cursorToLast = true
+					return m, m.loadCmd(m.offset - urlsPageSize)
+				}
 			}
 		}
 		before := m.urlTable.Cursor()
@@ -158,7 +310,12 @@ func (m AuditUrlsModel) Update(msg tea.Msg) (AuditUrlsModel, tea.Cmd) {
 		if len(m.urls) > 0 && m.urlTable.Cursor() != before {
 			m.urlIdx = m.urlTable.Cursor()
 			m.issueIdx = 0
+			m.issues = nil
+			m.issuesLoading = true
 			m.rebuildIssueTable()
+			if u := m.selURL(); u != nil {
+				return m, tea.Batch(cmd, m.issuesLoadCmd(u.URL))
+			}
 		}
 
 	case paneUrlIssues:
@@ -169,6 +326,14 @@ func (m AuditUrlsModel) Update(msg tea.Msg) (AuditUrlsModel, tea.Cmd) {
 		}
 	}
 	return m, cmd
+}
+
+// jumpToPage moves the URL list to the start of the given page and loads it,
+// keeping the previous page visible until the new one arrives.
+func (m AuditUrlsModel) jumpToPage(offset int) (AuditUrlsModel, tea.Cmd) {
+	m.cursorTo, m.cursorToLast = 0, false
+	m.offset = m.clampOffset(offset)
+	return m, m.loadCmd(m.offset)
 }
 
 // selURL returns the audited URL under the cursor of the left table.
@@ -188,7 +353,7 @@ func (m AuditUrlsModel) View() string {
 	if !m.loaded {
 		return "Loading URLs..."
 	}
-	if len(m.urls) == 0 {
+	if m.total == 0 {
 		return centerLines(helpStyle.Render("No audited URLs for this audit."), m.width)
 	}
 	return m.splitView()
@@ -205,83 +370,100 @@ const widgetBlockLines = 5
 // widgetVisible reports whether the summary widget has room: the terminal
 // must be wide enough for its boxes and the panes must stay usable below it.
 func (m AuditUrlsModel) widgetVisible() bool {
-	return m.width >= summaryWidgetMinWidth && len(m.urls) > 0 && m.height-5 >= 3
+	return m.loaded && m.agg != nil && m.agg.Total() > 0 && m.width >= summaryWidgetMinWidth && m.height-7 >= 3
 }
 
-// paneBoxH is the height of the panes below the summary widget: the full
-// content height minus the widget block when it is shown.
-func (m AuditUrlsModel) paneBoxH() int {
-	h := m.height
+// statusVisible reports whether the page status line has room and is useful.
+func (m AuditUrlsModel) statusVisible() bool {
+	return m.loaded && m.total > 0 && m.width >= 60
+}
+
+// leadLines is how many lines the summary widget and the page status occupy
+// above the panes. The rendered view and the table geometry must agree on
+// this so the boxed panes exactly fill the remaining height. Both blocks are
+// dropped when they would leave no room for the panes.
+func (m AuditUrlsModel) leadLines() int {
+	lines := 0
 	if m.widgetVisible() {
-		h -= widgetBlockLines
+		lines += widgetBlockLines
 	}
-	if h < 1 {
-		h = 1
+	if m.statusVisible() {
+		lines += 2
 	}
-	return h
+	if m.height-lines < 3 {
+		return 0
+	}
+	return lines
 }
 
-// summaryWidget renders one stat box per audited URL lifecycle metric:
-// total, new, active and missing counts plus the average duration and score
-// of the listed URLs.
+// summaryWidget renders one stat box per audited URL lifecycle metric: total,
+// new, active and missing counts plus the average duration and score across
+// every URL of the audit.
 func (m AuditUrlsModel) summaryWidget() string {
 	if !m.widgetVisible() {
 		return ""
 	}
 
-	total := len(m.urls)
-	var fresh, active, missing int
-	for _, u := range m.urls {
-		switch u.State {
-		case domain.UrlStateNew:
-			fresh++
-		case domain.UrlStateActive:
-			active++
-		case domain.UrlStateMissing:
-			missing++
-		}
-	}
-
-	var durationSum time.Duration
-	var scoreSum float64
-	for _, u := range m.urls {
-		durationSum += u.Duration
-		scoreSum += u.Summary.Score
-	}
+	agg := m.agg
+	states := agg.URLStates
+	total := agg.Total()
 
 	metrics := []widgetMetric{
 		{label: "Total", value: fmt.Sprintf("%d", total), color: lipgloss.Color("#7aa2f7")},
-		{label: "New", value: fmt.Sprintf("%d", fresh), color: lipgloss.Color("#2ac3de")},
-		{label: "Active", value: fmt.Sprintf("%d", active), color: lipgloss.Color("#9ece6a")},
-		{label: "Missing", value: fmt.Sprintf("%d", missing), color: lipgloss.Color("#f7768e")},
-		{label: "Avg Duration", value: formatDuration(durationSum / time.Duration(total)), color: lipgloss.Color("#bb9af7")},
-		{label: "Avg Score", value: fmt.Sprintf("%.1f", scoreSum/float64(total)), color: lipgloss.Color("#e0af68")},
+		{label: "New", value: fmt.Sprintf("%d", states.New), color: lipgloss.Color("#2ac3de")},
+		{label: "Active", value: fmt.Sprintf("%d", states.Active), color: lipgloss.Color("#9ece6a")},
+		{label: "Missing", value: fmt.Sprintf("%d", states.Missing), color: lipgloss.Color("#f7768e")},
+		{label: "Avg Duration", value: formatDuration(agg.AvgDuration), color: lipgloss.Color("#bb9af7")},
+		{label: "Avg Score", value: fmt.Sprintf("%.1f", agg.AvgScore), color: lipgloss.Color("#e0af68")},
 	}
 	return metricsWidget(metrics, m.width)
 }
 
-// splitView renders the summary widget on top and the three panes below when
-// the terminal is wide enough: URLs take 2/5, their issues 2/5 and the issue
-// evidence 1/5. On narrow terminals only the URL pane is shown.
+// pageStatus renders the position of the current page inside the audited URL
+// list.
+func (m AuditUrlsModel) pageStatus() string {
+	if !m.statusVisible() {
+		return ""
+	}
+	first := m.offset + 1
+	last := m.offset + len(m.urls)
+	label := fmt.Sprintf("Rows %d–%d of %d", first, last, m.total)
+	if m.pageCount() > 1 {
+		label += fmt.Sprintf("  •  Page %d/%d", m.offset/urlsPageSize+1, m.pageCount())
+	}
+	return helpStyle.Render(label)
+}
+
+// splitView renders the summary widget and page status on top and the three
+// panes below when the terminal is wide enough: URLs take 2/5, their issues
+// 2/5 and the issue evidence 1/5. On narrow terminals only the URL pane is
+// shown.
 func (m AuditUrlsModel) splitView() string {
 	if m.height < 5 {
 		return "Terminal too small for the urls view."
 	}
 
-	widget := ""
-	if m.widgetVisible() {
-		widget = m.summaryWidget() + "\n"
-	}
 	boxH := m.paneBoxH()
 	rows := boxH - 2
+
+	var b strings.Builder
+	if m.widgetVisible() {
+		b.WriteString(m.summaryWidget())
+		b.WriteString("\n")
+	}
+	if m.statusVisible() {
+		b.WriteString(m.pageStatus())
+		b.WriteString("\n")
+	}
+	head := b.String()
 
 	if !m.split() {
 		left := m.paneView(m.leftPane(), m.width-2, rows)
 		box := paneBox(left, m.width, boxH, m.focusPane == paneUrls)
-		if widget == "" {
+		if head == "" {
 			return box
 		}
-		return widget + box
+		return head + box
 	}
 
 	leftW, midW, rightW := m.paneWidths()
@@ -298,8 +480,8 @@ func (m AuditUrlsModel) splitView() string {
 	midLines := strings.Split(midBox, "\n")
 	rightLines := strings.Split(rightBox, "\n")
 
-	var b strings.Builder
-	b.WriteString(widget)
+	b.Reset()
+	b.WriteString(head)
 	for i := 0; i < boxH; i++ {
 		b.WriteString(leftLines[i])
 		b.WriteString(midLines[i])
@@ -319,7 +501,9 @@ func (m AuditUrlsModel) leftPane() string {
 func (m AuditUrlsModel) midPane() string {
 	if u := m.selURL(); u == nil {
 		return "Select a URL on the left to inspect its issues."
-	} else if len(u.Issues) == 0 {
+	} else if m.issuesLoading {
+		return "Loading issues..."
+	} else if len(m.issues) == 0 {
 		if u.State == domain.UrlStateMissing {
 			return "URL missing from the latest run — no issues."
 		}
@@ -332,7 +516,7 @@ func (m AuditUrlsModel) midPane() string {
 // URL as indented JSON. The pane stays empty until an issue with evidence is
 // selected.
 func (m AuditUrlsModel) evidencePane() string {
-	if m.audit == nil || len(m.issues) == 0 {
+	if len(m.issues) == 0 || m.issuesLoading {
 		return ""
 	}
 	idx := m.issueIdx
@@ -402,9 +586,13 @@ func (m AuditUrlsModel) Help() string {
 	if m.auditID == "" {
 		return "Ctrl+O: Audits"
 	}
+	paging := ""
+	if m.pageCount() > 1 {
+		paging = "n/p: Page  •  g/G: First/Last  •  "
+	}
 	switch m.focusPane {
 	case paneUrls:
-		return "→: Issues  •  ↑/↓: URL  •  r: Recheck URL  •  o: Open in Browser  •  Ctrl+O: Audits  •  q: Quit"
+		return "→: Issues  •  ↑/↓: URL  •  " + paging + "r: Recheck URL  •  o: Open in Browser  •  Ctrl+O: Audits  •  q: Quit"
 	default:
 		return "←: URLs  •  ↑/↓: Issue  •  Ctrl+O: Audits  •  q: Quit"
 	}
@@ -441,7 +629,7 @@ func (m AuditUrlsModel) paneInners() (urlInner, issueInner int) {
 }
 
 func (m *AuditUrlsModel) rebuildUrlTable() {
-	if m.audit == nil {
+	if !m.loaded {
 		m.urlTable = table.New()
 		return
 	}
@@ -508,9 +696,18 @@ func (m *AuditUrlsModel) rebuildUrlTable() {
 	if cursor >= len(rows) {
 		cursor = len(rows) - 1
 	}
+	switch {
+	case m.cursorToLast && len(rows) > 0:
+		cursor = len(rows) - 1
+	case m.cursorTo >= 0:
+		cursor = m.cursorTo
+	}
 	if cursor < 0 {
 		cursor = 0
 	}
+	m.cursorTo = -1
+	m.cursorToLast = false
+	m.urlIdx = cursor
 
 	t := table.New(
 		table.WithColumns(columns),
@@ -525,19 +722,19 @@ func (m *AuditUrlsModel) rebuildUrlTable() {
 }
 
 func (m *AuditUrlsModel) rebuildIssueTable() {
-	if m.audit == nil {
+	if !m.loaded {
 		m.issueTab = table.New()
 		return
 	}
 
 	u := m.selURL()
-	if u == nil {
+	if u == nil || m.issues == nil {
 		m.issueTab = table.New()
 		return
 	}
 
-	sorted := make([]domain.Issue, len(u.Issues))
-	copy(sorted, u.Issues)
+	sorted := make([]domain.Issue, len(m.issues))
+	copy(sorted, m.issues)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		return sorted[i].Severity.Weight() > sorted[j].Severity.Weight()
 	})
@@ -611,7 +808,8 @@ func (m *AuditUrlsModel) rebuildIssueTable() {
 }
 
 // rowCount is the number of table rows that fit inside one pane (the pane
-// borders take two lines, and the summary widget takes its own block above).
+// borders take two lines, and the summary widget and page status take their
+// own block above).
 func (m AuditUrlsModel) rowCount() int {
 	h := m.paneBoxH() - 2
 	if m.height <= 0 {
@@ -619,6 +817,16 @@ func (m AuditUrlsModel) rowCount() int {
 	}
 	if h < 1 {
 		return 1
+	}
+	return h
+}
+
+// paneBoxH is the height of the panes below the summary widget and page
+// status: the full content height minus their blocks when they are shown.
+func (m AuditUrlsModel) paneBoxH() int {
+	h := m.height - m.leadLines()
+	if h < 1 {
+		h = 1
 	}
 	return h
 }
@@ -665,9 +873,10 @@ func commonHost(urls []*domain.AuditedUrl) (host string, shared bool) {
 	return sharedHost(raw)
 }
 
-// displayURL shortens a URL to its path when every URL of the audit shares
+// displayURL shortens a URL to its path when every URL of the list shares
 // the given host, so the repeated domain does not eat the column width.
-// Mixed hosts keep full URLs.
+// Mixed hosts keep full URLs. In paged lists the host is derived from the
+// loaded page, keeping the display consistent within the page.
 func displayURL(raw, host string, shared bool) string {
 	if !shared {
 		return raw

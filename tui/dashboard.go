@@ -17,12 +17,16 @@ import (
 	"github.com/vvb13a/goaudit/service"
 )
 
-// dashboardLoadedMsg carries the fully hydrated audit whose metrics are
-// shown on the dashboard, together with the snapshot of its previous run
-// (nil when this is the first run). id guards against stale responses.
+// dashboardLoadedMsg carries the aggregate state of the current audit for
+// the dashboard: its run metadata (score, duration, config) and the metric
+// counts derived from its URL and issue rows, together with the snapshot of
+// its previous run (nil when this is the first run). id guards against stale
+// responses.
 type dashboardLoadedMsg struct {
 	id       string
 	audit    *domain.Audit
+	metrics  *domain.AuditMetrics
+	checks   int
 	previous *domain.AuditSnapshot
 	err      error
 }
@@ -76,6 +80,8 @@ type DashboardModel struct {
 	auditID string
 	loading bool
 	audit   *domain.Audit
+	metrics *domain.AuditMetrics
+	checks  int
 
 	// previous is the snapshot of the run before the current one, used to
 	// annotate the metrics with deltas.
@@ -101,15 +107,29 @@ func (m DashboardModel) Running() bool {
 
 func (m DashboardModel) loadCmd(id string) tea.Cmd {
 	return func() tea.Msg {
-		audit, err := m.deps.AuditService.GetByID(context.Background(), id)
+		// The dashboard aggregates the audit from the store instead of
+		// hydrating its URL and issue rows: the record carries the run
+		// metadata, the metric query the counts and the snapshots the
+		// previous-run deltas.
+		audit, err := m.deps.AuditService.GetConfig(context.Background(), id)
 		if err != nil {
 			return dashboardLoadedMsg{id: id, err: err}
+		}
+		metrics, err := m.deps.AuditService.DashboardMetrics(context.Background(), id)
+		if err != nil {
+			return dashboardLoadedMsg{id: id, err: err}
+		}
+		checks := len(audit.CheckNames)
+		if checks == 0 {
+			if n, err := m.deps.AuditService.DistinctIssueChecks(context.Background(), id); err == nil {
+				checks = n
+			}
 		}
 		var previous *domain.AuditSnapshot
 		if snapshots, err := m.deps.AuditService.ListSnapshots(context.Background(), id, 2); err == nil && len(snapshots) > 1 {
 			previous = snapshots[1]
 		}
-		return dashboardLoadedMsg{id: id, audit: audit, previous: previous}
+		return dashboardLoadedMsg{id: id, audit: audit, metrics: metrics, checks: checks, previous: previous}
 	}
 }
 
@@ -129,6 +149,8 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 			return m, NotifyDanger(fmt.Sprintf("Failed to load audit metrics: %v", msg.err))
 		}
 		m.audit = msg.audit
+		m.metrics = msg.metrics
+		m.checks = msg.checks
 		m.previous = msg.previous
 		return m, nil
 
@@ -172,6 +194,8 @@ func (m DashboardModel) openDetail(id string) (DashboardModel, tea.Cmd) {
 		m.auditID = id
 		m.loading = true
 		m.audit = nil
+		m.metrics = nil
+		m.checks = 0
 		m.previous = nil
 	}
 	if m.loading {
@@ -180,26 +204,26 @@ func (m DashboardModel) openDetail(id string) (DashboardModel, tea.Cmd) {
 	return m, nil
 }
 
-// showTenant fills the dashboard with an already fully hydrated audit,
-// without a round trip to the store. Used right after a run completes. The
-// previous snapshot is refreshed from the store so the deltas compare the
-// fresh run against the one before it.
-func (m DashboardModel) showTenant(a *domain.Audit) DashboardModel {
-	m.state = dashboardListState
-	m.auditID = a.ID
-	m.loading = false
-	m.audit = a
-	m.previous = nil
-	return m
-}
-
 // clearTenant drops the audit currently shown on the dashboard.
 func (m DashboardModel) clearTenant() DashboardModel {
 	m.auditID = ""
 	m.loading = false
 	m.audit = nil
+	m.metrics = nil
+	m.checks = 0
 	m.previous = nil
 	m.state = dashboardListState
+	return m
+}
+
+// release drops the loaded dashboard state so the memory is returned before
+// the tab sits in the background. The next activation reloads it.
+func (m DashboardModel) release() DashboardModel {
+	m.loading = true
+	m.audit = nil
+	m.metrics = nil
+	m.checks = 0
+	m.previous = nil
 	return m
 }
 
@@ -647,73 +671,20 @@ func metricsOf(boxes []metricBox, values ...string) []widgetMetric {
 	return metrics
 }
 
-// totalIssues counts the issues of every audited URL of the audit.
-func (m DashboardModel) totalIssues() int {
-	total := 0
-	for _, u := range m.audit.Urls {
-		total += len(u.Issues)
-	}
-	return total
-}
-
-// totalChecks returns the number of checks that ran, falling back to the
-// distinct checks observed in the issues for audits without stored check
-// names.
-func (m DashboardModel) totalChecks() int {
-	if n := len(m.audit.CheckNames); n > 0 {
-		return n
-	}
-	seen := make(map[string]struct{})
-	for _, u := range m.audit.Urls {
-		for _, iss := range u.Issues {
-			seen[iss.CheckName] = struct{}{}
-		}
-	}
-	return len(seen)
-}
-
-func (m DashboardModel) urlStateCounts() (newURLs, activeURLs, missingURLs int) {
-	for _, u := range m.audit.Urls {
-		switch u.State {
-		case domain.UrlStateNew:
-			newURLs++
-		case domain.UrlStateActive:
-			activeURLs++
-		case domain.UrlStateMissing:
-			missingURLs++
-		}
-	}
-	return newURLs, activeURLs, missingURLs
-}
-
-func (m DashboardModel) severityCounts() map[domain.Severity]int {
-	counts := make(map[domain.Severity]int)
-	for _, u := range m.audit.Urls {
-		for _, iss := range u.Issues {
-			counts[iss.Severity]++
-		}
-	}
-	return counts
-}
-
-func (m DashboardModel) lifecycleCounts() map[domain.IssueLifecycle]int {
-	counts := make(map[domain.IssueLifecycle]int)
-	for _, u := range m.audit.Urls {
-		for _, iss := range u.Issues {
-			counts[iss.Lifecycle]++
-		}
-	}
-	return counts
-}
+// metrics must be loaded before any of the metric helpers below run; the
+// view only reaches them when m.metrics is set.
 
 // overviewMetrics are the hero totals: audited URLs, issues, checks and the
 // overall audit score.
 func (m DashboardModel) overviewMetrics() []widgetMetric {
+	urls := m.metrics.TotalURLs()
+	issues := m.metrics.TotalIssues()
+	checks := m.checks
 	var urlsDelta, issuesDelta, checksDelta, scoreDelta string
 	if prev := m.previous; prev != nil {
-		urlsDelta = intDelta(len(m.audit.Urls), prev.Overview.TotalURLs)
-		issuesDelta = intDelta(m.totalIssues(), prev.Overview.TotalIssues)
-		checksDelta = intDelta(m.totalChecks(), prev.Overview.TotalChecks)
+		urlsDelta = intDelta(urls, prev.Overview.TotalURLs)
+		issuesDelta = intDelta(issues, prev.Overview.TotalIssues)
+		checksDelta = intDelta(checks, prev.Overview.TotalChecks)
 		scoreDelta = floatDelta(m.audit.Score, prev.Overview.Score)
 	}
 
@@ -725,9 +696,9 @@ func (m DashboardModel) overviewMetrics() []widgetMetric {
 		{label: "Score", color: auditScoreColor(score)},
 	}
 	return metricsOf(boxes,
-		withDelta(fmt.Sprintf("%d", len(m.audit.Urls)), urlsDelta),
-		withDelta(fmt.Sprintf("%d", m.totalIssues()), issuesDelta),
-		withDelta(fmt.Sprintf("%d", m.totalChecks()), checksDelta),
+		withDelta(fmt.Sprintf("%d", urls), urlsDelta),
+		withDelta(fmt.Sprintf("%d", issues), issuesDelta),
+		withDelta(fmt.Sprintf("%d", checks), checksDelta),
 		withDelta(fmt.Sprintf("%.1f", score), scoreDelta),
 	)
 }
@@ -748,12 +719,12 @@ func auditScoreColor(score float64) lipgloss.Color {
 
 // urlStateMetrics counts the audited URLs by their lifecycle state.
 func (m DashboardModel) urlStateMetrics() []widgetMetric {
-	newURLs, activeURLs, missingURLs := m.urlStateCounts()
+	states := m.metrics.URLStates
 	var newDelta, activeDelta, missingDelta string
 	if prev := m.previous; prev != nil {
-		newDelta = intDelta(newURLs, prev.URLStates.New)
-		activeDelta = intDelta(activeURLs, prev.URLStates.Active)
-		missingDelta = intDelta(missingURLs, prev.URLStates.Missing)
+		newDelta = intDelta(states.New, prev.URLStates.New)
+		activeDelta = intDelta(states.Active, prev.URLStates.Active)
+		missingDelta = intDelta(states.Missing, prev.URLStates.Missing)
 	}
 	boxes := []metricBox{
 		{label: "New", color: lipgloss.Color("#2ac3de")},
@@ -761,17 +732,17 @@ func (m DashboardModel) urlStateMetrics() []widgetMetric {
 		{label: "Missing", color: lipgloss.Color("#f7768e")},
 	}
 	return metricsOf(boxes,
-		withDelta(fmt.Sprintf("%d", newURLs), newDelta),
-		withDelta(fmt.Sprintf("%d", activeURLs), activeDelta),
-		withDelta(fmt.Sprintf("%d", missingURLs), missingDelta),
+		withDelta(fmt.Sprintf("%d", states.New), newDelta),
+		withDelta(fmt.Sprintf("%d", states.Active), activeDelta),
+		withDelta(fmt.Sprintf("%d", states.Missing), missingDelta),
 	)
 }
 
 // severityMetrics tallies every issue of the audit by severity.
 func (m DashboardModel) severityMetrics() []widgetMetric {
-	counts := m.severityCounts()
-	fatal, errs, warns := counts[domain.SeverityFatal], counts[domain.SeverityError], counts[domain.SeverityWarning]
-	notices, infos, passes := counts[domain.SeverityNotice], counts[domain.SeverityInfo], counts[domain.SeveritySuccess]
+	counts := m.metrics.Severity
+	fatal, errs, warns := counts.Fatal, counts.Error, counts.Warning
+	notices, infos, passes := counts.Notice, counts.Info, counts.Success
 
 	var fatalDelta, errorDelta, warnDelta, noticeDelta, infoDelta, passDelta string
 	if prev := m.previous; prev != nil {
@@ -803,16 +774,16 @@ func (m DashboardModel) severityMetrics() []widgetMetric {
 
 // lifecycleMetrics tallies every issue of the audit by its lifecycle state.
 func (m DashboardModel) lifecycleMetrics() []widgetMetric {
-	counts := m.lifecycleCounts()
+	counts := m.metrics.Lifecycle
 	lifecycleDeltas := func(prev domain.SnapshotLifecycles) []string {
 		return []string{
-			intDelta(counts[domain.LifecycleNew], prev.New),
-			intDelta(counts[domain.LifecycleOpen], prev.Open),
-			intDelta(counts[domain.LifecycleResurfaced], prev.Resurfaced),
-			intDelta(counts[domain.LifecycleResolved], prev.Resolved),
-			intDelta(counts[domain.LifecycleImproved], prev.Improved),
-			intDelta(counts[domain.LifecycleDegraded], prev.Degraded),
-			intDelta(counts[domain.LifecyclePassed], prev.Passed),
+			intDelta(counts.New, prev.New),
+			intDelta(counts.Open, prev.Open),
+			intDelta(counts.Resurfaced, prev.Resurfaced),
+			intDelta(counts.Resolved, prev.Resolved),
+			intDelta(counts.Improved, prev.Improved),
+			intDelta(counts.Degraded, prev.Degraded),
+			intDelta(counts.Passed, prev.Passed),
 		}
 	}
 	var deltas []string
@@ -833,13 +804,13 @@ func (m DashboardModel) lifecycleMetrics() []widgetMetric {
 		{label: "PASSED", color: lipgloss.Color("#7aa2f7")},
 	}
 	return metricsOf(boxes,
-		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleNew]), deltas[0]),
-		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleOpen]), deltas[1]),
-		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleResurfaced]), deltas[2]),
-		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleResolved]), deltas[3]),
-		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleImproved]), deltas[4]),
-		withDelta(fmt.Sprintf("%d", counts[domain.LifecycleDegraded]), deltas[5]),
-		withDelta(fmt.Sprintf("%d", counts[domain.LifecyclePassed]), deltas[6]),
+		withDelta(fmt.Sprintf("%d", counts.New), deltas[0]),
+		withDelta(fmt.Sprintf("%d", counts.Open), deltas[1]),
+		withDelta(fmt.Sprintf("%d", counts.Resurfaced), deltas[2]),
+		withDelta(fmt.Sprintf("%d", counts.Resolved), deltas[3]),
+		withDelta(fmt.Sprintf("%d", counts.Improved), deltas[4]),
+		withDelta(fmt.Sprintf("%d", counts.Degraded), deltas[5]),
+		withDelta(fmt.Sprintf("%d", counts.Passed), deltas[6]),
 	)
 }
 
@@ -854,8 +825,8 @@ func dashValue(v string) string {
 // timingMetrics reports the wall-clock duration of the run, amortized per
 // audited URL and per issue.
 func (m DashboardModel) timingMetrics() []widgetMetric {
-	urls := len(m.audit.Urls)
-	issues := m.totalIssues()
+	urls := m.metrics.TotalURLs()
+	issues := m.metrics.TotalIssues()
 	total := m.audit.Duration
 
 	curPerURL := time.Duration(0)
