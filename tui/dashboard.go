@@ -554,6 +554,7 @@ func (m DashboardModel) metricsView() string {
 		description string
 		accent      lipgloss.Color
 		metrics     []widgetMetric
+		diagram     string
 	}{
 		{
 			title:       "Overview",
@@ -572,12 +573,14 @@ func (m DashboardModel) metricsView() string {
 			description: "Issues of the latest run grouped by severity, from fatal to pass.",
 			accent:      lipgloss.Color("#e0af68"),
 			metrics:     m.severityMetrics(),
+			diagram:     m.severityChart(w),
 		},
 		{
 			title:       "Lifecycles",
 			description: "How every issue evolved between the previous and the latest run.",
 			accent:      lipgloss.Color("#bb9af7"),
 			metrics:     m.lifecycleMetrics(),
+			diagram:     m.lifecycleChart(w),
 		},
 		{
 			title:       "Timing",
@@ -588,7 +591,7 @@ func (m DashboardModel) metricsView() string {
 	}
 
 	for i, s := range sections {
-		b.WriteString(metricsSection(w, s.accent, s.title, s.description, s.metrics))
+		b.WriteString(metricsSection(w, s.accent, s.title, s.description, s.metrics, s.diagram))
 		if i < len(sections)-1 {
 			b.WriteString("\n\n")
 		}
@@ -622,8 +625,8 @@ func (m DashboardModel) auditHeader(width int) string {
 }
 
 // metricsSection renders one dashboard widget: its title and description on
-// top and the metric boxes below.
-func metricsSection(width int, accent lipgloss.Color, title, description string, metrics []widgetMetric) string {
+// top, the metric boxes below and an optional diagram under them.
+func metricsSection(width int, accent lipgloss.Color, title, description string, metrics []widgetMetric, diagram string) string {
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().
 		Bold(true).
@@ -642,6 +645,12 @@ func metricsSection(width int, accent lipgloss.Color, title, description string,
 	b.WriteString("\n")
 	if boxed := metricsWidget(metrics, width); boxed != "" {
 		b.WriteString(boxed)
+	}
+	if diagram != "" {
+		if metrics != nil {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(diagram)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -770,6 +779,180 @@ func (m DashboardModel) severityMetrics() []widgetMetric {
 		withDelta(fmt.Sprintf("%d", infos), infoDelta),
 		withDelta(fmt.Sprintf("%d", passes), passDelta),
 	)
+}
+
+// barChartRow is one row of a metric bar chart: a label, its count, the bar
+// color and, when a previous run is known, its signed change. moreIsGood
+// controls how the delta is colored.
+type barChartRow struct {
+	label      string
+	count      int
+	color      lipgloss.Color
+	delta      int
+	hasDelta   bool
+	moreIsGood bool
+}
+
+// barChart renders a horizontal bar chart: one row per metric, every bar
+// scaled against the largest count so the shape of the distribution is
+// visible at a glance. Rows with a previous run also carry their signed
+// change, colored green when the move is good and red when it is bad.
+func barChart(rows []barChartRow, width int) string {
+	if len(rows) == 0 {
+		return ""
+	}
+
+	maxCount, labelW, deltaW := 0, 0, 0
+	for _, r := range rows {
+		if r.count > maxCount {
+			maxCount = r.count
+		}
+		if len(r.label) > labelW {
+			labelW = len(r.label)
+		}
+		if r.hasDelta {
+			if d := len(fmt.Sprintf("(%+d)", r.delta)); r.delta != 0 && d > deltaW {
+				deltaW = d
+			}
+		}
+	}
+	valueW := len(fmt.Sprintf("%d", maxCount))
+	if valueW < 1 {
+		valueW = 1
+	}
+
+	// One space before the count plus, when present, a space and the signed
+	// delta column.
+	deltaSpace := 0
+	if deltaW > 0 {
+		deltaSpace = 1 + deltaW
+	}
+
+	const gap = 2
+	barW := width - labelW - gap - valueW - deltaSpace - 1
+	if barW < 4 {
+		barW = 4
+	}
+
+	var b strings.Builder
+	for i, r := range rows {
+		barLen := 0
+		if maxCount > 0 {
+			barLen = r.count * barW / maxCount
+			// Keep non-zero counts visible even when they round to zero.
+			if r.count > 0 && barLen == 0 {
+				barLen = 1
+			}
+		}
+		bar := lipgloss.NewStyle().
+			Foreground(r.color).
+			Render(strings.Repeat("█", barLen))
+		b.WriteString(fmt.Sprintf("%-*s", labelW, r.label))
+		b.WriteString(strings.Repeat(" ", gap))
+		b.WriteString(bar)
+		b.WriteString(strings.Repeat(" ", barW-barLen+1))
+		b.WriteString(fmt.Sprintf("%*d", valueW, r.count))
+
+		if deltaSpace > 0 {
+			delta := ""
+			if r.delta != 0 {
+				delta = fmt.Sprintf("(%+d)", r.delta)
+			}
+			style := lipgloss.NewStyle()
+			if r.delta != 0 {
+				style = style.Foreground(deltaColor(r.delta, r.moreIsGood))
+			}
+			b.WriteString(" ")
+			b.WriteString(fmt.Sprintf("%*s", deltaW, style.Render(delta)))
+		}
+
+		if i < len(rows)-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+// deltaColor colors a run-over-run change: green when the move is good and
+// red when it is bad, neutral for no change.
+func deltaColor(delta int, moreIsGood bool) lipgloss.Color {
+	good := delta < 0
+	if moreIsGood {
+		good = delta > 0
+	}
+	if good {
+		return lipgloss.Color("#9ece6a")
+	}
+	return lipgloss.Color("#f7768e")
+}
+
+// severityChart renders the severity distribution of the latest run as a bar
+// chart with per-severity run-over-run deltas.
+func (m DashboardModel) severityChart(width int) string {
+	counts := m.metrics.Severity
+	defs := []struct {
+		label string
+		sev   domain.Severity
+	}{
+		{"FATAL", domain.SeverityFatal},
+		{"ERROR", domain.SeverityError},
+		{"WARN", domain.SeverityWarning},
+		{"NOTICE", domain.SeverityNotice},
+		{"INFO", domain.SeverityInfo},
+		{"PASS", domain.SeveritySuccess},
+	}
+
+	rows := make([]barChartRow, 0, len(defs))
+	for _, d := range defs {
+		r := barChartRow{
+			label:      d.label,
+			count:      counts.Count(d.sev),
+			color:      issueSeverityColor(d.sev),
+			moreIsGood: d.sev == domain.SeveritySuccess,
+		}
+		if m.previous != nil {
+			r.hasDelta = true
+			r.delta = r.count - m.previous.SeverityCounts.Count(d.sev)
+		}
+		rows = append(rows, r)
+	}
+	return barChart(rows, width)
+}
+
+// lifecycleChart renders the lifecycle distribution of the latest run as a
+// bar chart with per-lifecycle run-over-run deltas.
+func (m DashboardModel) lifecycleChart(width int) string {
+	counts := m.metrics.Lifecycle
+	defs := []struct {
+		label      string
+		get        func(domain.SnapshotLifecycles) int
+		color      lipgloss.Color
+		moreIsGood bool
+	}{
+		{"NEW", func(c domain.SnapshotLifecycles) int { return c.New }, lipgloss.Color("#2ac3de"), false},
+		{"OPEN", func(c domain.SnapshotLifecycles) int { return c.Open }, lipgloss.Color("#e0af68"), false},
+		{"RESURFACED", func(c domain.SnapshotLifecycles) int { return c.Resurfaced }, lipgloss.Color("#ff9e64"), false},
+		{"RESOLVED", func(c domain.SnapshotLifecycles) int { return c.Resolved }, lipgloss.Color("#73daca"), true},
+		{"IMPROVED", func(c domain.SnapshotLifecycles) int { return c.Improved }, lipgloss.Color("#9ece6a"), true},
+		{"DEGRADED", func(c domain.SnapshotLifecycles) int { return c.Degraded }, lipgloss.Color("#f7768e"), false},
+		{"PASSED", func(c domain.SnapshotLifecycles) int { return c.Passed }, lipgloss.Color("#7aa2f7"), true},
+	}
+
+	rows := make([]barChartRow, 0, len(defs))
+	for _, d := range defs {
+		r := barChartRow{
+			label:      d.label,
+			count:      d.get(counts),
+			color:      d.color,
+			moreIsGood: d.moreIsGood,
+		}
+		if m.previous != nil {
+			r.hasDelta = true
+			r.delta = r.count - d.get(m.previous.LifecycleCounts)
+		}
+		rows = append(rows, r)
+	}
+	return barChart(rows, width)
 }
 
 // lifecycleMetrics tallies every issue of the audit by its lifecycle state.

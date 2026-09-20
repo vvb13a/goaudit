@@ -17,12 +17,12 @@ import (
 // are computed by the persistence layer and stored on the row.
 type AuditedUrl struct {
 	ID              string    `gorm:"column:id;primaryKey;type:text"`
-	AuditID         string    `gorm:"column:audit_id;type:text;not null;uniqueIndex:idx_audited_urls_audit_url"`
+	AuditID         string    `gorm:"column:audit_id;type:text;not null;uniqueIndex:idx_audited_urls_audit_url;index:idx_audited_urls_audit_state,priority:1"`
 	URL             string    `gorm:"column:url;type:text;not null;uniqueIndex:idx_audited_urls_audit_url"`
 	FinalURL        string    `gorm:"column:final_url;type:text;not null"`
 	StatusCode      int64     `gorm:"column:status_code"`
 	DurationMs      int64     `gorm:"column:duration_ms"`
-	State           string    `gorm:"column:state;type:text;not null;default:'active'"`
+	State           string    `gorm:"column:state;type:text;not null;default:'active';index:idx_audited_urls_audit_state,priority:2"`
 	CreatedAt       time.Time `gorm:"column:created_at"`
 	LastAuditedAt   time.Time `gorm:"column:last_audited_at"`
 	SeverityCounts  string    `gorm:"column:severity_counts;type:text;not null;default:'{}'"`

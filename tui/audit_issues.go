@@ -17,7 +17,7 @@ import (
 // issuesPageSize is how many issue rows one page of the issues tab holds.
 // Browsing an audit never keeps more than a page resident: jumping loads the
 // requested page from the store and drops the previous one.
-const issuesPageSize = 250
+const issuesPageSize = 100
 
 // issuesPageLoadedMsg carries one page of issues of the current audit
 // (tenant) together with the severity distribution of the whole filtered
