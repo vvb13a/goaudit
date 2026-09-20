@@ -31,6 +31,33 @@ func applyIssueFilter(q *gorm.DB, filter domain.IssueFilter) *gorm.DB {
 	return q
 }
 
+// applyURLFilter pushes the dimensions of an audited URL filter into the
+// query: states and highest severities become IN sets and the duration (the
+// stored millisecond column) and score bounds become inclusive range
+// predicates. A zero bound is skipped, so the zero-value filter leaves the
+// query untouched.
+func applyURLFilter(q *gorm.DB, filter domain.URLFilter) *gorm.DB {
+	if len(filter.States) > 0 {
+		q = q.Where("state IN ?", stringValues(filter.States))
+	}
+	if len(filter.HighestSeverities) > 0 {
+		q = q.Where("highest_severity IN ?", stringValues(filter.HighestSeverities))
+	}
+	if filter.DurationMin > 0 {
+		q = q.Where("duration_ms >= ?", filter.DurationMin.Milliseconds())
+	}
+	if filter.DurationMax > 0 {
+		q = q.Where("duration_ms <= ?", filter.DurationMax.Milliseconds())
+	}
+	if filter.ScoreMin > 0 {
+		q = q.Where("score >= ?", filter.ScoreMin)
+	}
+	if filter.ScoreMax > 0 {
+		q = q.Where("score <= ?", filter.ScoreMax)
+	}
+	return q
+}
+
 // stringValues converts a slice of string-backed enum values for use in a
 // SQL IN clause.
 func stringValues[T ~string](values []T) []string {
@@ -183,15 +210,16 @@ func (s *AuditService) DashboardMetrics(ctx context.Context, auditID string) (*d
 	return metrics, nil
 }
 
-// URLAggregates computes the aggregate state of every audited URL row of the
-// audit: per-state counts plus the average duration and score across all
-// rows (missing rows included, matching the urls tab's summary widget).
-func (s *AuditService) URLAggregates(ctx context.Context, auditID string) (*domain.URLAggregates, error) {
+// URLAggregates computes the aggregate state of the audited URL rows of the
+// audit that match the given filter: per-state counts plus the average
+// duration and score across those rows, matching the urls tab's summary
+// widget for its current filter.
+func (s *AuditService) URLAggregates(ctx context.Context, auditID string, filter domain.URLFilter) (*domain.URLAggregates, error) {
 	var rows []store.AuditedUrl
-	if err := s.db.WithContext(ctx).
+	q := applyURLFilter(s.db.WithContext(ctx).
 		Select("state", "duration_ms", "score").
-		Where("audit_id = ?", auditID).
-		Find(&rows).Error; err != nil {
+		Where("audit_id = ?", auditID), filter)
+	if err := q.Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("aggregate audited urls: %w", err)
 	}
 
@@ -217,11 +245,12 @@ func (s *AuditService) URLAggregates(ctx context.Context, auditID string) (*doma
 	return agg, nil
 }
 
-// ListURLsPage returns one page of audited URL rows of the audit in stored
-// order (rowid), starting at the given offset and capped at limit rows, plus
-// the total number of rows. No issues are attached; use URLIssues to load
-// the issues of the selected URL.
-func (s *AuditService) ListURLsPage(ctx context.Context, auditID string, limit, offset int) ([]*domain.AuditedUrl, int, error) {
+// ListURLsPage returns one page of the audited URL rows of the audit that
+// match the given filter, in stored order (rowid), starting at the given
+// offset and capped at limit rows, plus the total number of matching rows.
+// No issues are attached; use URLIssues to load the issues of the selected
+// URL.
+func (s *AuditService) ListURLsPage(ctx context.Context, auditID string, filter domain.URLFilter, limit, offset int) ([]*domain.AuditedUrl, int, error) {
 	if limit <= 0 {
 		limit = 200
 	}
@@ -230,15 +259,16 @@ func (s *AuditService) ListURLsPage(ctx context.Context, auditID string, limit, 
 	}
 
 	var total int64
-	if err := s.db.WithContext(ctx).Model(&store.AuditedUrl{}).
-		Where("audit_id = ?", auditID).
-		Count(&total).Error; err != nil {
+	countQuery := applyURLFilter(s.db.WithContext(ctx).Model(&store.AuditedUrl{}).
+		Where("audit_id = ?", auditID), filter)
+	if err := countQuery.Count(&total).Error; err != nil {
 		return nil, 0, fmt.Errorf("count audited urls: %w", err)
 	}
 
 	var models []store.AuditedUrl
-	if err := s.db.WithContext(ctx).
-		Where("audit_id = ?", auditID).
+	pageQuery := applyURLFilter(s.db.WithContext(ctx).
+		Where("audit_id = ?", auditID), filter)
+	if err := pageQuery.
 		Order("rowid").
 		Limit(limit).Offset(offset).
 		Find(&models).Error; err != nil {

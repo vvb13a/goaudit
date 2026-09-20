@@ -17,6 +17,9 @@ const (
 	UrlStateMissing UrlState = "missing"
 )
 
+// AllUrlStates lists every URL state in display order.
+var AllUrlStates = []UrlState{UrlStateNew, UrlStateActive, UrlStateMissing}
+
 func (s UrlState) IsValid() bool {
 	switch s {
 	case UrlStateNew, UrlStateActive, UrlStateMissing:

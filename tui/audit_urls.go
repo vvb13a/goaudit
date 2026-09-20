@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -23,14 +25,15 @@ const urlsPageSize = 100
 
 // urlsPageLoadedMsg carries one page of audited URLs of the current audit
 // (tenant) together with the aggregate state backing the summary widget.
-// auditID and offset guard against stale responses.
+// auditID, offset and filterKey guard against stale responses.
 type urlsPageLoadedMsg struct {
-	auditID string
-	offset  int
-	urls    []*domain.AuditedUrl
-	total   int
-	agg     *domain.URLAggregates
-	err     error
+	auditID   string
+	offset    int
+	filterKey string
+	urls      []*domain.AuditedUrl
+	total     int
+	agg       *domain.URLAggregates
+	err       error
 }
 
 // urlIssuesLoadedMsg carries the issues of the audited URL selected in the
@@ -76,6 +79,14 @@ type AuditUrlsModel struct {
 	issueIdx      int
 	focusPane     int
 
+	// filter is the URL filter of the list; filterOpen is true while its
+	// overlay is shown. filterCursor indexes filterRows and filterOffset is
+	// the first row of its visible window.
+	filter       urlFilterState
+	filterOpen   bool
+	filterCursor int
+	filterOffset int
+
 	// cursorTo and cursorToLast steer the table cursor of the page that is
 	// loading: crossing into a page from above lands on its last row, all
 	// other jumps land on its first row.
@@ -93,19 +104,25 @@ func NewAuditUrlsModel(deps Deps) AuditUrlsModel {
 		issueTab:  table.New(),
 		focusPane: paneUrls,
 		cursorTo:  -1,
+		filter:    defaultURLFilter(),
 	}
 }
 
-// NavigationEnabled lets the tab leave and re-enter freely (list only).
+// NavigationEnabled lets the tab leave and re-enter freely (list only). It is
+// disabled while the filter overlay consumes the keys.
 func (m AuditUrlsModel) NavigationEnabled() bool {
-	return true
+	return !m.filterOpen
 }
 
 // Track points the tab at the given audit and resets it so the next
-// activation reloads its first page.
+// activation reloads its first page. Switching audits also resets the filter.
 func (m AuditUrlsModel) Track(id string) AuditUrlsModel {
 	if m.auditID != id {
 		m = m.release()
+		m.filter = defaultURLFilter()
+		m.filterOpen = false
+		m.filterCursor = 0
+		m.filterOffset = 0
 	}
 	m.auditID = id
 	return m
@@ -126,6 +143,10 @@ func (m AuditUrlsModel) release() AuditUrlsModel {
 	m.issuesLoading = false
 	m.cursorTo = -1
 	m.cursorToLast = false
+	m.filterOpen = false
+	m.filterCursor = 0
+	m.filterOffset = 0
+	m.blurFilterInputs()
 	m.urlTable = table.New()
 	m.issueTab = table.New()
 	return m
@@ -156,19 +177,21 @@ func (m AuditUrlsModel) clampOffset(offset int) int {
 }
 
 // loadCmd loads the URL page at the given offset together with the URL
-// aggregates of the audit.
+// aggregates of the audit, both narrowed by the current filter.
 func (m AuditUrlsModel) loadCmd(offset int) tea.Cmd {
 	offset = m.clampOffset(offset)
+	filter := m.urlFilter()
+	key := urlFilterKey(m.filter)
 	return func() tea.Msg {
-		agg, err := m.deps.AuditService.URLAggregates(context.Background(), m.auditID)
+		agg, err := m.deps.AuditService.URLAggregates(context.Background(), m.auditID, filter)
 		if err != nil {
-			return urlsPageLoadedMsg{auditID: m.auditID, offset: offset, err: err}
+			return urlsPageLoadedMsg{auditID: m.auditID, offset: offset, filterKey: key, err: err}
 		}
-		urls, total, err := m.deps.AuditService.ListURLsPage(context.Background(), m.auditID, urlsPageSize, offset)
+		urls, total, err := m.deps.AuditService.ListURLsPage(context.Background(), m.auditID, filter, urlsPageSize, offset)
 		if err != nil {
-			return urlsPageLoadedMsg{auditID: m.auditID, offset: offset, err: err}
+			return urlsPageLoadedMsg{auditID: m.auditID, offset: offset, filterKey: key, err: err}
 		}
-		return urlsPageLoadedMsg{auditID: m.auditID, offset: offset, urls: urls, total: total, agg: agg}
+		return urlsPageLoadedMsg{auditID: m.auditID, offset: offset, filterKey: key, urls: urls, total: total, agg: agg}
 	}
 }
 
@@ -189,7 +212,7 @@ func (m AuditUrlsModel) Update(msg tea.Msg) (AuditUrlsModel, tea.Cmd) {
 		return m, nil
 
 	case urlsPageLoadedMsg:
-		if msg.auditID != m.auditID || msg.offset != m.offset {
+		if msg.auditID != m.auditID || msg.offset != m.offset || msg.filterKey != m.filterKey() {
 			return m, nil
 		}
 		m.loaded = true
@@ -233,9 +256,16 @@ func (m AuditUrlsModel) Update(msg tea.Msg) (AuditUrlsModel, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.filterOpen {
+			return m.handleFilterKey(msg)
+		}
 		switch msg.String() {
 		case "q":
 			return m, tea.Quit
+		case "f":
+			m.filterOpen = true
+			m.clampFilterCursor()
+			return m, m.syncFilterFocus()
 		case "left", "h":
 			if m.focusPane > paneUrls {
 				m.focusPane--
@@ -344,9 +374,465 @@ func (m AuditUrlsModel) selURL() *domain.AuditedUrl {
 	return m.urls[m.urlIdx]
 }
 
+// ---- Filter ----
+
+// Filter dimensions of the URLs tab.
+const (
+	urlFilterDimState = iota
+	urlFilterDimSeverity
+	urlFilterDimDuration
+	urlFilterDimScore
+)
+
+// Range field ids of the URLs filter overlay.
+const (
+	urlRangeDurationMin = iota
+	urlRangeDurationMax
+	urlRangeScoreMin
+	urlRangeScoreMax
+)
+
+// urlFilterRow is one line of the URL filter overlay: either a section header
+// or a selectable row of a dimension. Range dimensions carry the id of the
+// numeric input they edit.
+type urlFilterRow struct {
+	header  string
+	dim     int
+	value   string
+	label   string
+	rangeID int
+}
+
+// isRange reports whether the row edits one of the numeric bounds.
+func (r urlFilterRow) isRange() bool { return r.rangeID >= 0 }
+
+// urlFilterState is the filter of the URLs tab: multi-select sets for the
+// state and highest-severity dimensions (an empty set is unfiltered) plus the
+// editable duration (ms) and score bounds.
+type urlFilterState struct {
+	states     map[string]bool
+	severities map[string]bool
+	durMin     textinput.Model
+	durMax     textinput.Model
+	scoreMin   textinput.Model
+	scoreMax   textinput.Model
+}
+
+// newURLRangeInput builds one numeric bound field.
+func newURLRangeInput(placeholder string) textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = placeholder
+	ti.CharLimit = 9
+	ti.Width = 9
+	return ti
+}
+
+// defaultURLFilter returns the filter the tab starts with: every state and
+// severity included and no numeric bounds.
+func defaultURLFilter() urlFilterState {
+	return urlFilterState{
+		states:     map[string]bool{},
+		severities: map[string]bool{},
+		durMin:     newURLRangeInput("ms"),
+		durMax:     newURLRangeInput("ms"),
+		scoreMin:   newURLRangeInput("0"),
+		scoreMax:   newURLRangeInput("100"),
+	}
+}
+
+// set returns the selected-value set of a toggle dimension.
+func (f urlFilterState) set(dim int) map[string]bool {
+	switch dim {
+	case urlFilterDimState:
+		return f.states
+	case urlFilterDimSeverity:
+		return f.severities
+	default:
+		return nil
+	}
+}
+
+// included reports whether a value of a toggle dimension is part of the
+// filtered set. A dimension without selections includes every value.
+func (f urlFilterState) included(dim int, value string) bool {
+	set := f.set(dim)
+	return len(set) == 0 || set[value]
+}
+
+// urlFilter converts the selection state into the query filter. Empty bounds
+// or unparsable values are left out, which leaves that side unbounded.
+func (m AuditUrlsModel) urlFilter() domain.URLFilter {
+	f := domain.URLFilter{}
+	for _, s := range domain.AllUrlStates {
+		if m.filter.states[string(s)] {
+			f.States = append(f.States, s)
+		}
+	}
+	for _, s := range domain.AllSeverities {
+		if m.filter.severities[string(s)] {
+			f.HighestSeverities = append(f.HighestSeverities, s)
+		}
+	}
+	if d, ok := parseMillis(m.filter.durMin.Value()); ok {
+		f.DurationMin = d
+	}
+	if d, ok := parseMillis(m.filter.durMax.Value()); ok {
+		f.DurationMax = d
+	}
+	if v, ok := parseScore(m.filter.scoreMin.Value()); ok {
+		f.ScoreMin = v
+	}
+	if v, ok := parseScore(m.filter.scoreMax.Value()); ok {
+		f.ScoreMax = v
+	}
+	return f
+}
+
+// parseMillis parses a non-negative integer amount of milliseconds.
+func parseMillis(raw string) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return time.Duration(n) * time.Millisecond, true
+}
+
+// parseScore parses a non-negative score value, accepting decimals.
+func parseScore(raw string) (float64, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || v < 0 {
+		return 0, false
+	}
+	return v, true
+}
+
+// urlFilterKey is a deterministic signature of a filter state, used to
+// discard stale page loads.
+func urlFilterKey(f urlFilterState) string {
+	var b strings.Builder
+	for _, s := range domain.AllUrlStates {
+		if f.states[string(s)] {
+			b.WriteString("s" + string(s) + ",")
+		}
+	}
+	for _, s := range domain.AllSeverities {
+		if f.severities[string(s)] {
+			b.WriteString("v" + string(s) + ",")
+		}
+	}
+	b.WriteString("d" + strings.TrimSpace(f.durMin.Value()) + "-" + strings.TrimSpace(f.durMax.Value()) + ",")
+	b.WriteString("p" + strings.TrimSpace(f.scoreMin.Value()) + "-" + strings.TrimSpace(f.scoreMax.Value()) + ",")
+	return b.String()
+}
+
+// filterKey is the signature of the model's current filter.
+func (m AuditUrlsModel) filterKey() string {
+	return urlFilterKey(m.filter)
+}
+
+// filtersActive reports whether the user narrowed the list.
+func (m AuditUrlsModel) filtersActive() bool {
+	return m.filterKey() != urlFilterKey(urlFilterState{})
+}
+
+// rangeInput returns the numeric bound field with the given range id.
+func (m *AuditUrlsModel) rangeInput(id int) *textinput.Model {
+	switch id {
+	case urlRangeDurationMin:
+		return &m.filter.durMin
+	case urlRangeDurationMax:
+		return &m.filter.durMax
+	case urlRangeScoreMin:
+		return &m.filter.scoreMin
+	default:
+		return &m.filter.scoreMax
+	}
+}
+
+// blurFilterInputs removes the focus from every numeric bound field.
+func (m *AuditUrlsModel) blurFilterInputs() {
+	for id := 0; id <= urlRangeScoreMax; id++ {
+		m.rangeInput(id).Blur()
+	}
+}
+
+// syncFilterFocus focuses the numeric field of the selected row, blurring the
+// others, and returns the cursor-blink command of the focused field.
+func (m *AuditUrlsModel) syncFilterFocus() tea.Cmd {
+	m.blurFilterInputs()
+	if row, ok := m.selFilterRow(); ok && row.isRange() {
+		return m.rangeInput(row.rangeID).Focus()
+	}
+	return nil
+}
+
+// filterRows lays the filter options out as state, severity, duration and
+// score sections.
+func (m AuditUrlsModel) filterRows() []urlFilterRow {
+	rows := make([]urlFilterRow, 0, 20)
+	rows = append(rows, urlFilterRow{header: "State"})
+	for _, s := range domain.AllUrlStates {
+		rows = append(rows, urlFilterRow{
+			dim:     urlFilterDimState,
+			value:   string(s),
+			label:   strings.ToUpper(string(s)),
+			rangeID: -1,
+		})
+	}
+	rows = append(rows, urlFilterRow{header: "Highest Severity"})
+	for i := len(domain.AllSeverities) - 1; i >= 0; i-- {
+		s := domain.AllSeverities[i]
+		rows = append(rows, urlFilterRow{
+			dim:     urlFilterDimSeverity,
+			value:   string(s),
+			label:   strings.ToUpper(string(s)),
+			rangeID: -1,
+		})
+	}
+	rows = append(rows, urlFilterRow{header: "Duration (ms)"})
+	rows = append(rows,
+		urlFilterRow{dim: urlFilterDimDuration, label: "Min", rangeID: urlRangeDurationMin},
+		urlFilterRow{dim: urlFilterDimDuration, label: "Max", rangeID: urlRangeDurationMax},
+	)
+	rows = append(rows, urlFilterRow{header: "Score (0-100)"})
+	rows = append(rows,
+		urlFilterRow{dim: urlFilterDimScore, label: "Min", rangeID: urlRangeScoreMin},
+		urlFilterRow{dim: urlFilterDimScore, label: "Max", rangeID: urlRangeScoreMax},
+	)
+	return rows
+}
+
+// filterWindowHeight is how many filter rows fit into the overlay for the
+// current terminal height (borders, title, hint, summary and blanks aside).
+func (m AuditUrlsModel) filterWindowHeight() int {
+	h := m.height - 7
+	if h < 1 {
+		return 1
+	}
+	return h
+}
+
+// clampFilterCursor snaps the filter cursor onto a selectable row and keeps
+// it inside the visible window.
+func (m *AuditUrlsModel) clampFilterCursor() {
+	rows := m.filterRows()
+	if len(rows) == 0 {
+		m.filterCursor = 0
+		return
+	}
+	if m.filterCursor < 0 || m.filterCursor >= len(rows) || rows[m.filterCursor].header != "" {
+		m.filterCursor = 0
+		for i, row := range rows {
+			if row.header == "" {
+				m.filterCursor = i
+				break
+			}
+		}
+	}
+	m.ensureFilterCursorVisible(len(rows))
+}
+
+// moveFilterCursor moves the filter cursor by delta rows, skipping headers.
+func (m *AuditUrlsModel) moveFilterCursor(delta int) {
+	rows := m.filterRows()
+	if len(rows) == 0 {
+		return
+	}
+	idx := m.filterCursor + delta
+	for idx >= 0 && idx < len(rows) && rows[idx].header != "" {
+		idx += delta
+	}
+	if idx < 0 || idx >= len(rows) {
+		return
+	}
+	m.filterCursor = idx
+	m.ensureFilterCursorVisible(len(rows))
+}
+
+// ensureFilterCursorVisible scrolls the filter window so the cursor is in it.
+func (m *AuditUrlsModel) ensureFilterCursorVisible(total int) {
+	visible := m.filterWindowHeight()
+	if visible > total {
+		visible = total
+	}
+	if visible < 1 {
+		visible = 1
+	}
+	if m.filterCursor < m.filterOffset {
+		m.filterOffset = m.filterCursor
+	}
+	if m.filterCursor >= m.filterOffset+visible {
+		m.filterOffset = m.filterCursor - visible + 1
+	}
+	if m.filterOffset < 0 {
+		m.filterOffset = 0
+	}
+}
+
+// selFilterRow returns the selectable row under the filter cursor.
+func (m AuditUrlsModel) selFilterRow() (urlFilterRow, bool) {
+	rows := m.filterRows()
+	if m.filterCursor < 0 || m.filterCursor >= len(rows) {
+		return urlFilterRow{}, false
+	}
+	row := rows[m.filterCursor]
+	if row.header != "" {
+		return urlFilterRow{}, false
+	}
+	return row, true
+}
+
+// urlFilterValues lists the selectable values of a toggle dimension in
+// display order.
+func (m AuditUrlsModel) urlFilterValues(dim int) []string {
+	switch dim {
+	case urlFilterDimState:
+		out := make([]string, 0, len(domain.AllUrlStates))
+		for _, s := range domain.AllUrlStates {
+			out = append(out, string(s))
+		}
+		return out
+	case urlFilterDimSeverity:
+		out := make([]string, 0, len(domain.AllSeverities))
+		for _, s := range domain.AllSeverities {
+			out = append(out, string(s))
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// toggleURLFilterValue flips one value of a toggle dimension. A dimension
+// without selections includes everything, so the first toggle turns it into
+// an explicit "everything except this value" selection.
+func (m AuditUrlsModel) toggleURLFilterValue(dim int, value string) AuditUrlsModel {
+	set := m.filter.set(dim)
+	if set == nil {
+		return m
+	}
+	if len(set) == 0 {
+		for _, v := range m.urlFilterValues(dim) {
+			if v != value {
+				set[v] = true
+			}
+		}
+		return m
+	}
+	if set[value] {
+		delete(set, value)
+	} else {
+		set[value] = true
+	}
+	return m
+}
+
+// onlyURLFilterValue narrows a toggle dimension to a single value.
+func (m AuditUrlsModel) onlyURLFilterValue(dim int, value string) AuditUrlsModel {
+	set := m.filter.set(dim)
+	if set == nil {
+		return m
+	}
+	for v := range set {
+		delete(set, v)
+	}
+	set[value] = true
+	return m
+}
+
+// clearURLFilterDimension removes the selections of one toggle dimension,
+// which makes it unfiltered again (all values included).
+func (m AuditUrlsModel) clearURLFilterDimension(dim int) AuditUrlsModel {
+	set := m.filter.set(dim)
+	for v := range set {
+		delete(set, v)
+	}
+	return m
+}
+
+// handleFilterKey processes a key while the filter overlay is open. Toggling a
+// value or editing a bound reloads the first page under the new filter, so
+// the list behind the overlay updates live.
+func (m AuditUrlsModel) handleFilterKey(key tea.KeyMsg) (AuditUrlsModel, tea.Cmd) {
+	switch key.String() {
+	case "esc", "f", "q":
+		m.filterOpen = false
+		m.blurFilterInputs()
+		return m, nil
+	case "up", "k":
+		m.moveFilterCursor(-1)
+		return m, m.syncFilterFocus()
+	case "down", "j":
+		m.moveFilterCursor(1)
+		return m, m.syncFilterFocus()
+	case "c":
+		m.filter = defaultURLFilter()
+		m.filterOffset = 0
+		m.clampFilterCursor()
+		cmd := m.syncFilterFocus()
+		reloaded, loadCmd := m.reloadFiltered()
+		return reloaded, tea.Batch(cmd, loadCmd)
+	}
+
+	row, ok := m.selFilterRow()
+	if !ok {
+		return m, nil
+	}
+
+	if row.isRange() {
+		input := m.rangeInput(row.rangeID)
+		before := input.Value()
+		var cmd tea.Cmd
+		*input, cmd = input.Update(key)
+		if input.Value() != before {
+			reloaded, loadCmd := m.reloadFiltered()
+			return reloaded, tea.Batch(cmd, loadCmd)
+		}
+		return m, cmd
+	}
+
+	switch key.String() {
+	case " ", "enter":
+		m = m.toggleURLFilterValue(row.dim, row.value)
+	case "o":
+		m = m.onlyURLFilterValue(row.dim, row.value)
+	case "a":
+		m = m.clearURLFilterDimension(row.dim)
+	default:
+		return m, nil
+	}
+	reloaded, cmd := m.reloadFiltered()
+	return reloaded, cmd
+}
+
+// reloadFiltered reloads the first page under the current filter while
+// keeping the overlay open.
+func (m AuditUrlsModel) reloadFiltered() (AuditUrlsModel, tea.Cmd) {
+	m.cursorTo, m.cursorToLast = 0, false
+	m.offset = 0
+	return m, m.loadCmd(0)
+}
+
 // ---- Rendering ----
 
 func (m AuditUrlsModel) View() string {
+	view := m.listView()
+	if m.filterOpen {
+		return overlay(view, m.filterView(), m.width, m.height)
+	}
+	return view
+}
+
+// listView renders the URLs browser without the filter overlay.
+func (m AuditUrlsModel) listView() string {
 	if m.auditID == "" {
 		return centerLines(helpStyle.Render("No audit selected. Press Ctrl+O to open the audit switcher."), m.width)
 	}
@@ -354,6 +840,9 @@ func (m AuditUrlsModel) View() string {
 		return "Loading URLs..."
 	}
 	if m.total == 0 {
+		if m.filtersActive() {
+			return centerLines(helpStyle.Render("No URLs match the current filters. Press 'f' to adjust them."), m.width)
+		}
 		return centerLines(helpStyle.Render("No audited URLs for this audit."), m.width)
 	}
 	return m.splitView()
@@ -431,7 +920,96 @@ func (m AuditUrlsModel) pageStatus() string {
 	if m.pageCount() > 1 {
 		label += fmt.Sprintf("  •  Page %d/%d", m.offset/urlsPageSize+1, m.pageCount())
 	}
+	if m.filtersActive() {
+		label += "  •  Filtered"
+	}
 	return helpStyle.Render(label)
+}
+
+// filterView renders the URL filter overlay: the option sections in a
+// scrollable window plus a summary of the active selections.
+func (m AuditUrlsModel) filterView() string {
+	innerW := m.width - 8
+	if innerW > 64 {
+		innerW = 64
+	}
+	if innerW < 24 {
+		innerW = 24
+	}
+
+	rows := m.filterRows()
+	visible := m.filterWindowHeight()
+	if visible > len(rows) {
+		visible = len(rows)
+	}
+	offset := m.filterOffset
+	if maxOffset := len(rows) - visible; offset > maxOffset {
+		offset = maxOffset
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var b strings.Builder
+	b.WriteString(clipToWidth(titleStyle.Render("URL Filters"), innerW))
+	b.WriteString("\n")
+	b.WriteString(clipToWidth(helpStyle.Render("↑/↓ Move  •  Space Toggle  •  o Only  •  a All  •  c Clear"), innerW))
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat(" ", innerW))
+	b.WriteString("\n")
+
+	for i := offset; i < offset+visible && i < len(rows); i++ {
+		b.WriteString(m.filterRowLine(rows[i], i == m.filterCursor, innerW))
+		b.WriteString("\n")
+	}
+
+	b.WriteString(strings.Repeat(" ", innerW))
+	b.WriteString("\n")
+	b.WriteString(clipToWidth(helpStyle.Render(m.filterSummary()), innerW))
+	return b.String()
+}
+
+// filterRowLine renders one row of the filter overlay: a section header, a
+// checkable value or an editable numeric bound.
+func (m AuditUrlsModel) filterRowLine(row urlFilterRow, active bool, innerW int) string {
+	if row.header != "" {
+		return clipToWidth(helpStyle.Render(strings.ToUpper(row.header)), innerW)
+	}
+	cursor := "  "
+	if active {
+		cursor = labelStyle.Render("> ")
+	}
+	if row.isRange() {
+		field := m.rangeInput(row.rangeID).View()
+		return clipToWidth(fmt.Sprintf("%s%-5s %s", cursor, row.label+":", field), innerW)
+	}
+	checked := "[ ]"
+	if m.filter.included(row.dim, row.value) {
+		checked = labelStyle.Render("[x]")
+	}
+	return clipToWidth(fmt.Sprintf("%s%s %s", cursor, checked, row.label), innerW)
+}
+
+// filterSummary reports the active selections and bounds of the filter.
+func (m AuditUrlsModel) filterSummary() string {
+	dim := func(selected, total int) string {
+		if selected == 0 {
+			return "all"
+		}
+		return fmt.Sprintf("%d/%d", selected, total)
+	}
+	bound := func(v string) string {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return "*"
+		}
+		return v
+	}
+	return fmt.Sprintf("State %s • Severity %s • Duration %s-%s ms • Score %s-%s",
+		dim(len(m.filter.states), len(domain.AllUrlStates)),
+		dim(len(m.filter.severities), len(domain.AllSeverities)),
+		bound(m.filter.durMin.Value()), bound(m.filter.durMax.Value()),
+		bound(m.filter.scoreMin.Value()), bound(m.filter.scoreMax.Value()))
 }
 
 // splitView renders the summary widget and page status on top and the three
@@ -586,15 +1164,18 @@ func (m AuditUrlsModel) Help() string {
 	if m.auditID == "" {
 		return "Ctrl+O: Audits"
 	}
+	if m.filterOpen {
+		return "↑/↓: Move  •  Space: Toggle  •  o: Only  •  a: All  •  c: Clear  •  Esc: Close"
+	}
 	paging := ""
 	if m.pageCount() > 1 {
 		paging = "n/p: Page  •  g/G: First/Last  •  "
 	}
 	switch m.focusPane {
 	case paneUrls:
-		return "→: Issues  •  ↑/↓: URL  •  " + paging + "r: Recheck URL  •  o: Open in Browser  •  Ctrl+O: Audits  •  q: Quit"
+		return "→: Issues  •  ↑/↓: URL  •  " + paging + "r: Recheck URL  •  f: Filter  •  o: Open in Browser  •  Ctrl+O: Audits  •  q: Quit"
 	default:
-		return "←: URLs  •  ↑/↓: Issue  •  Ctrl+O: Audits  •  q: Quit"
+		return "←: URLs  •  ↑/↓: Issue  •  f: Filter  •  Ctrl+O: Audits  •  q: Quit"
 	}
 }
 
