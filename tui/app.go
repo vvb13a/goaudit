@@ -20,8 +20,6 @@ type Deps struct {
 	Registry      *service.CheckRegistry
 	Runner        *service.Runner
 	AuditService  *service.AuditService
-	ExcelService  *service.ExcelService
-	HtmlService   *service.HtmlService
 }
 
 // ViewID identifies which top-level view is currently active.

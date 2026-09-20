@@ -58,7 +58,7 @@ type switcherPrompt struct {
 func (p *switcherPrompt) promptText() string {
 	switch p.action {
 	case switcherActionReset:
-		return fmt.Sprintf("Reset audit '%s'?\n\nDeletes its URLs, issues, run history and exports.\nThe audit configuration is kept.\n\nPress y to confirm or any other key to cancel.", p.audit.Name)
+		return fmt.Sprintf("Reset audit '%s'?\n\nDeletes its URLs, issues and run history.\nThe audit configuration is kept.\n\nPress y to confirm or any other key to cancel.", p.audit.Name)
 	default:
 		return fmt.Sprintf("Delete audit '%s'?\n\nThis cannot be undone.\n\nPress y to confirm or any other key to cancel.", p.audit.Name)
 	}
@@ -305,16 +305,6 @@ func (m Model) handleSwitcherKey(key tea.KeyMsg) (Model, tea.Cmd) {
 			return m, m.cloneTenantCmd(t)
 		}
 		return m, nil
-	case "e":
-		if t := m.selTenant(); t != nil {
-			return m, exportExcelCmd(m.deps, t)
-		}
-		return m, nil
-	case "w":
-		if t := m.selTenant(); t != nil {
-			return m, exportHTMLCmd(m.deps, t)
-		}
-		return m, nil
 	}
 	return m, nil
 }
@@ -400,91 +390,5 @@ func (m Model) switcherHelp() string {
 		}
 		return "y: Delete  •  any other key: Cancel"
 	}
-	return "↑/↓: Move  •  Enter: Open  •  n: New Audit  •  r: Rerun  •  d: Delete  •  x: Reset  •  c: Duplicate  •  e: Excel  •  w: HTML  •  Esc: Close"
-}
-
-// ---- Exports ----
-
-// exportExcelCmd hydrates the full audit (reports with issues), renders it
-// into an Excel workbook (reusing an existing one instead of regenerating)
-// and opens the workbook with the default xlsx viewer.
-func exportExcelCmd(deps Deps, a *domain.Audit) tea.Cmd {
-	return func() tea.Msg {
-		if deps.ExcelService == nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: "Excel export is not available",
-			}}
-		}
-
-		full, err := deps.AuditService.GetByID(context.Background(), a.ID)
-		if err != nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: fmt.Sprintf("Export failed: %v", err),
-			}}
-		}
-
-		path, err := deps.ExcelService.ExportAudit(full)
-		if err != nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: fmt.Sprintf("Export failed: %v", err),
-			}}
-		}
-
-		if err := openWithDefaultApp(path); err != nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: fmt.Sprintf("Failed to open '%s': %v", path, err),
-			}}
-		}
-
-		return notifyMsg{notification: Notification{
-			Kind: NotificationSuccess,
-			Text: fmt.Sprintf("Opened audit workbook %s", path),
-		}}
-	}
-}
-
-// exportHTMLCmd hydrates the full audit (reports with issues), renders it
-// into an HTML report (reusing an existing one instead of regenerating) and
-// opens the report in the default browser.
-func exportHTMLCmd(deps Deps, a *domain.Audit) tea.Cmd {
-	return func() tea.Msg {
-		if deps.HtmlService == nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: "HTML report is not available",
-			}}
-		}
-
-		full, err := deps.AuditService.GetByID(context.Background(), a.ID)
-		if err != nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: fmt.Sprintf("Export failed: %v", err),
-			}}
-		}
-
-		path, err := deps.HtmlService.ExportAudit(full)
-		if err != nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: fmt.Sprintf("Export failed: %v", err),
-			}}
-		}
-
-		if err := openWithDefaultApp(path); err != nil {
-			return notifyMsg{notification: Notification{
-				Kind: NotificationDanger,
-				Text: fmt.Sprintf("Failed to open '%s': %v", path, err),
-			}}
-		}
-
-		return notifyMsg{notification: Notification{
-			Kind: NotificationSuccess,
-			Text: fmt.Sprintf("Opened audit report %s", path),
-		}}
-	}
+	return "↑/↓: Move  •  Enter: Open  •  n: New Audit  •  r: Rerun  •  d: Delete  •  x: Reset  •  c: Duplicate  •  Esc: Close"
 }

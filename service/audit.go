@@ -15,13 +15,11 @@ import (
 )
 
 type AuditService struct {
-	db    *gorm.DB
-	excel *ExcelService
-	html  *HtmlService
+	db *gorm.DB
 }
 
-func NewAuditService(db *gorm.DB, excel *ExcelService, html *HtmlService) *AuditService {
-	return &AuditService{db: db, excel: excel, html: html}
+func NewAuditService(db *gorm.DB) *AuditService {
+	return &AuditService{db: db}
 }
 
 // createBatchRows bounds how many rows one INSERT statement carries. SQLite
@@ -580,20 +578,6 @@ func (s *AuditService) ListSnapshots(ctx context.Context, auditID string, limit 
 }
 
 func (s *AuditService) Delete(ctx context.Context, id string) error {
-	// Remove the exported workbooks and reports before the database row so
-	// that a failed cleanup leaves the audit fully intact instead of
-	// half-deleted.
-	if s.excel != nil {
-		if err := s.excel.RemoveAuditFile(id); err != nil {
-			return fmt.Errorf("delete audit: %w", err)
-		}
-	}
-	if s.html != nil {
-		if err := s.html.RemoveAuditFile(id); err != nil {
-			return fmt.Errorf("delete audit: %w", err)
-		}
-	}
-
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("audit_id = ?", id).Delete(&store.AuditedUrl{}).Error; err != nil {
 			return err
@@ -614,24 +598,10 @@ func (s *AuditService) Delete(ctx context.Context, id string) error {
 
 // ResetData clears the run data of an audit while keeping the audit record
 // and its self-contained run configuration (name, description, targets,
-// checks and engine config) intact. The stored audited URLs, issues, run
-// snapshots and exported files are deleted and the derived summary (score,
-// duration) is zeroed; started_at moves to now so the record reads like a
-// fresh, never-run audit.
+// checks and engine config) intact. The stored audited URLs, issues and run
+// snapshots are deleted and the derived summary (score, duration) is zeroed;
+// started_at moves to now so the record reads like a fresh, never-run audit.
 func (s *AuditService) ResetData(ctx context.Context, id string) error {
-	// Remove the exported workbooks and reports first so a failed cleanup
-	// leaves the audit data fully intact.
-	if s.excel != nil {
-		if err := s.excel.RemoveAuditFile(id); err != nil {
-			return fmt.Errorf("reset audit: %w", err)
-		}
-	}
-	if s.html != nil {
-		if err := s.html.RemoveAuditFile(id); err != nil {
-			return fmt.Errorf("reset audit: %w", err)
-		}
-	}
-
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// The audit row doubles as the existence check: resetting an audit
 		// that does not exist must fail instead of silently deleting data

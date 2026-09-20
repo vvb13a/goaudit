@@ -40,9 +40,7 @@ func main() {
 	runner := service.NewRunner()
 
 	// 4. Application Services (GORM persistence)
-	excelService := service.NewExcelService("data/excel")
-	htmlService := service.NewHtmlService("data/html")
-	auditService := service.NewAuditService(db, excelService, htmlService)
+	auditService := service.NewAuditService(db)
 
 	// 5. Launch TUI
 	app := tui.New(tui.Deps{
@@ -50,8 +48,6 @@ func main() {
 		Registry:      registry,
 		Runner:        runner,
 		AuditService:  auditService,
-		ExcelService:  excelService,
-		HtmlService:   htmlService,
 	})
 
 	program := tea.NewProgram(app, tea.WithAltScreen())
