@@ -791,7 +791,7 @@ func (m AuditIssuesModel) detailPaneLines(innerW, height int) string {
 	if iss == nil {
 		return ""
 	}
-	lines := m.detailText(iss, innerW)
+	lines := issueDetailText(iss, innerW)
 	for len(lines) < height {
 		lines = append(lines, "")
 	}
@@ -804,8 +804,8 @@ func (m AuditIssuesModel) detailPaneLines(innerW, height int) string {
 	return strings.Join(lines, "\n")
 }
 
-// detailText renders the fields of one issue, soft-wrapped to the width.
-func (m AuditIssuesModel) detailText(iss *domain.Issue, width int) []string {
+// issueDetailText renders the fields of one issue, soft-wrapped to the width.
+func issueDetailText(iss *domain.Issue, width int) []string {
 	var out []string
 	add := func(s string) { out = append(out, s) }
 

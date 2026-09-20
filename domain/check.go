@@ -8,6 +8,15 @@ type CheckInfo struct {
 	Category    Category `json:"category"`
 }
 
+// CheckSummary is the aggregate state of one check over an audit: the check's
+// category and how many issues it produced, grouped by severity.
+type CheckSummary struct {
+	Name     string         `json:"name"`
+	Category Category       `json:"category"`
+	Total    int            `json:"total"`
+	Severity SeverityCounts `json:"severity"`
+}
+
 type Check interface {
 	Info() CheckInfo
 	Supports(doc *Document) bool

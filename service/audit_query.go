@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/vvb13a/goaudit/domain"
@@ -125,6 +126,72 @@ func (s *AuditService) ListIssuesPage(ctx context.Context, auditID string, filte
 		issues = append(issues, models[i].ToDomain())
 	}
 	return issues, nil
+}
+
+// CountIssues returns how many issues of the audit match the filter.
+func (s *AuditService) CountIssues(ctx context.Context, auditID string, filter domain.IssueFilter) (int, error) {
+	var count int64
+	q := applyIssueFilter(s.db.WithContext(ctx).Model(&store.Issue{}).
+		Where("audit_id = ?", auditID), filter)
+	if err := q.Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("count issues: %w", err)
+	}
+	return int(count), nil
+}
+
+// CheckSummaries groups the stored issues of the audit by check and returns
+// one summary per check with its category, total issue count and severity
+// distribution. Checks are ordered by category and then by name.
+func (s *AuditService) CheckSummaries(ctx context.Context, auditID string) ([]*domain.CheckSummary, error) {
+	type checkRow struct {
+		CheckName string
+		Category  string
+		Severity  string
+		Count     int
+	}
+	var rows []checkRow
+	if err := s.db.WithContext(ctx).Model(&store.Issue{}).
+		Select("check_name AS check_name, category AS category, severity AS severity, count(*) AS count").
+		Where("audit_id = ?", auditID).
+		Group("check_name, category, severity").
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("summarize checks: %w", err)
+	}
+
+	byName := make(map[string]*domain.CheckSummary, len(rows))
+	summaries := make([]*domain.CheckSummary, 0, len(rows))
+	for _, r := range rows {
+		summary := byName[r.CheckName]
+		if summary == nil {
+			summary = &domain.CheckSummary{Name: r.CheckName, Category: domain.Category(r.Category)}
+			byName[r.CheckName] = summary
+			summaries = append(summaries, summary)
+		}
+		summary.Total += r.Count
+		if sev, err := domain.ParseSeverity(r.Severity); err == nil {
+			summary.Severity.Add(sev, r.Count)
+		}
+	}
+
+	sort.SliceStable(summaries, func(i, j int) bool {
+		ri, rj := categoryRank(summaries[i].Category), categoryRank(summaries[j].Category)
+		if ri != rj {
+			return ri < rj
+		}
+		return summaries[i].Name < summaries[j].Name
+	})
+	return summaries, nil
+}
+
+// categoryRank returns the display order of a category, with unknown
+// categories sorted last.
+func categoryRank(c domain.Category) int {
+	for i, cat := range domain.AllCategories {
+		if cat == c {
+			return i
+		}
+	}
+	return len(domain.AllCategories)
 }
 
 // IssueCheckNames returns the distinct check names observed in the stored

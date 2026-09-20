@@ -29,6 +29,7 @@ const (
 	DashboardView ViewID = iota
 	IssuesView
 	UrlsView
+	ChecksView
 	TimelineView
 	ConfigView
 )
@@ -59,6 +60,7 @@ type Model struct {
 	dashboard     DashboardModel
 	auditUrls     AuditUrlsModel
 	auditIssues   AuditIssuesModel
+	checks        AuditChecksModel
 	timeline      TimelineModel
 	config        AuditConfigModel
 	width         int
@@ -89,6 +91,7 @@ type Model struct {
 	dashboardSized   bool
 	auditUrlsSized   bool
 	auditIssuesSized bool
+	checksSized      bool
 	timelineSized    bool
 	configSized      bool
 }
@@ -100,6 +103,7 @@ func New(deps Deps) Model {
 			{ID: DashboardView, Label: "Dashboard"},
 			{ID: IssuesView, Label: "Issues"},
 			{ID: UrlsView, Label: "URLs"},
+			{ID: ChecksView, Label: "Checks"},
 			{ID: TimelineView, Label: "Timeline"},
 			{ID: ConfigView, Label: "Config"},
 		}),
@@ -108,6 +112,7 @@ func New(deps Deps) Model {
 		dashboard:     NewDashboardModel(deps),
 		auditUrls:     NewAuditUrlsModel(deps),
 		auditIssues:   NewAuditIssuesModel(deps),
+		checks:        NewAuditChecksModel(deps),
 		timeline:      NewTimelineModel(deps),
 		config:        NewAuditConfigModel(deps),
 	}
@@ -141,6 +146,8 @@ func (m Model) activateCmd() tea.Cmd {
 		sized = m.auditUrlsSized
 	case IssuesView:
 		sized = m.auditIssuesSized
+	case ChecksView:
+		sized = m.checksSized
 	case TimelineView:
 		sized = m.timelineSized
 	case ConfigView:
@@ -162,6 +169,8 @@ func (m Model) activateCmd() tea.Cmd {
 			cmds = append(cmds, m.auditUrls.loadCmd(m.auditUrls.offset))
 		case IssuesView:
 			cmds = append(cmds, m.auditIssues.loadCmd(m.auditIssues.offset))
+		case ChecksView:
+			cmds = append(cmds, m.checks.loadCmd())
 		case TimelineView:
 			cmds = append(cmds, m.timeline.loadCmd(m.tenantID))
 		case ConfigView:
@@ -187,6 +196,8 @@ func (m Model) markViewSized() {
 		m.auditUrlsSized = true
 	case IssuesView:
 		m.auditIssuesSized = true
+	case ChecksView:
+		m.checksSized = true
 	case ConfigView:
 		m.configSized = true
 	case TimelineView:
@@ -205,6 +216,8 @@ func (m Model) viewIsRoot() bool {
 		return m.auditUrls.NavigationEnabled()
 	case IssuesView:
 		return m.auditIssues.NavigationEnabled()
+	case ChecksView:
+		return m.checks.NavigationEnabled()
 	case ConfigView:
 		return m.config.NavigationEnabled()
 	case TimelineView:
@@ -223,6 +236,8 @@ func (m Model) releaseView(id ViewID) Model {
 		m.auditUrls = m.auditUrls.release()
 	case IssuesView:
 		m.auditIssues = m.auditIssues.release()
+	case ChecksView:
+		m.checks = m.checks.release()
 	case TimelineView:
 		m.timeline = m.timeline.release()
 	}
@@ -242,6 +257,8 @@ func (m Model) goToView(id ViewID) (Model, tea.Cmd) {
 			m.auditUrls = m.auditUrls.Track(m.tenantID)
 		case IssuesView:
 			m.auditIssues = m.auditIssues.Track(m.tenantID)
+		case ChecksView:
+			m.checks = m.checks.Track(m.tenantID)
 		case TimelineView:
 			m.timeline = m.timeline.Track(m.tenantID)
 		case ConfigView:
@@ -416,6 +433,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.auditIssues, cmd = m.auditIssues.Update(msg)
 		return m, cmd
+	case ChecksView:
+		var cmd tea.Cmd
+		m.checks, cmd = m.checks.Update(msg)
+		return m, cmd
 	case ConfigView:
 		var cmd tea.Cmd
 		m.config, cmd = m.config.Update(msg)
@@ -465,6 +486,7 @@ func (m Model) handleAuditCreated(msg auditCreatedMsg) (tea.Model, tea.Cmd) {
 	m.nav = m.nav.Select(DashboardView)
 	m = m.releaseView(UrlsView)
 	m = m.releaseView(IssuesView)
+	m = m.releaseView(ChecksView)
 	m = m.releaseView(TimelineView)
 
 	var cmd tea.Cmd
@@ -500,6 +522,8 @@ func (m Model) handleURLRechecked(msg urlRecheckedMsg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.auditUrls.loadCmd(m.auditUrls.offset))
 		case IssuesView:
 			cmds = append(cmds, m.auditIssues.loadCmd(m.auditIssues.offset))
+		case ChecksView:
+			cmds = append(cmds, m.checks.loadCmd())
 		}
 	}
 	switch len(cmds) {
@@ -568,6 +592,8 @@ func (m Model) activeViewHelp() string {
 		return m.auditUrls.Help()
 	case IssuesView:
 		return m.auditIssues.Help()
+	case ChecksView:
+		return m.checks.Help()
 	case ConfigView:
 		return m.config.Help()
 	case TimelineView:
@@ -703,6 +729,8 @@ func (m Model) activeViewContent() string {
 		return m.auditUrls.View()
 	case IssuesView:
 		return m.auditIssues.View()
+	case ChecksView:
+		return m.checks.View()
 	case ConfigView:
 		return m.config.View()
 	case TimelineView:

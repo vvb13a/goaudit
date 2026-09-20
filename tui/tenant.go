@@ -120,6 +120,7 @@ func (m Model) handleTenantDeleted(msg tenantDeletedMsg) (tea.Model, tea.Cmd) {
 		m.auditUrls = m.auditUrls.Track("")
 		m.config = m.config.Track("")
 		m.auditIssues = m.auditIssues.Track("")
+		m.checks = m.checks.Track("")
 		m.timeline = m.timeline.Track("")
 	}
 
@@ -177,6 +178,7 @@ func (m Model) handleTenantReset(msg tenantResetMsg) (tea.Model, tea.Cmd) {
 		m.dashboard = m.dashboard.release()
 		m = m.releaseView(UrlsView)
 		m = m.releaseView(IssuesView)
+		m = m.releaseView(ChecksView)
 		m = m.releaseView(TimelineView)
 		cmds = append(cmds, m.activateCmd())
 	}
@@ -322,6 +324,7 @@ func (m Model) switchToTenant(t *domain.Audit) (Model, tea.Cmd) {
 	// are not kept resident while browsing the new audit.
 	m = m.releaseView(UrlsView)
 	m = m.releaseView(IssuesView)
+	m = m.releaseView(ChecksView)
 	m = m.releaseView(TimelineView)
 
 	var cmd tea.Cmd
