@@ -601,10 +601,118 @@ func (s *AuditService) Delete(ctx context.Context, id string) error {
 		if err := tx.Where("audit_id = ?", id).Delete(&store.Issue{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("audit_id = ?", id).Delete(&store.AuditSnapshot{}).Error; err != nil {
+			return err
+		}
 		return tx.Delete(&store.Audit{}, "id = ?", id).Error
 	})
 	if err != nil {
 		return fmt.Errorf("delete audit: %w", err)
 	}
 	return nil
+}
+
+// ResetData clears the run data of an audit while keeping the audit record
+// and its self-contained run configuration (name, description, targets,
+// checks and engine config) intact. The stored audited URLs, issues, run
+// snapshots and exported files are deleted and the derived summary (score,
+// duration) is zeroed; started_at moves to now so the record reads like a
+// fresh, never-run audit.
+func (s *AuditService) ResetData(ctx context.Context, id string) error {
+	// Remove the exported workbooks and reports first so a failed cleanup
+	// leaves the audit data fully intact.
+	if s.excel != nil {
+		if err := s.excel.RemoveAuditFile(id); err != nil {
+			return fmt.Errorf("reset audit: %w", err)
+		}
+	}
+	if s.html != nil {
+		if err := s.html.RemoveAuditFile(id); err != nil {
+			return fmt.Errorf("reset audit: %w", err)
+		}
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// The audit row doubles as the existence check: resetting an audit
+		// that does not exist must fail instead of silently deleting data
+		// of a stale id.
+		result := tx.Model(&store.Audit{}).
+			Where("id = ?", id).
+			Select("score", "duration_ms", "started_at").
+			Updates(&store.Audit{Score: 0, DurationMs: 0, StartedAt: time.Now().UTC()})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return domain.ErrAuditNotFound
+		}
+		if err := tx.Where("audit_id = ?", id).Delete(&store.AuditSnapshot{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("audit_id = ?", id).Delete(&store.AuditedUrl{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("audit_id = ?", id).Delete(&store.Issue{}).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("reset audit: %w", err)
+	}
+	return nil
+}
+
+// Duplicate clones the self-contained run configuration of an existing
+// audit into a new audit record without any run data (no URLs, issues or
+// snapshots). The clone's name is the source name suffixed with DUPLICATE.
+// Audits created before run configuration was stored inline fall back to
+// the URLs of their latest run and to the checks observed in their issues.
+func (s *AuditService) Duplicate(ctx context.Context, id string) (*domain.Audit, error) {
+	src, err := s.GetConfig(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	name := strings.TrimSpace(src.Name)
+	if name == "" {
+		name = "Untitled Audit"
+	}
+	description := src.Description
+	targets := src.Targets
+	checkNames := src.CheckNames
+
+	// Legacy audits: their records predate the inline run configuration.
+	if len(targets) == 0 || len(checkNames) == 0 {
+		full, err := s.GetByID(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("duplicate audit: %w", err)
+		}
+		if description == "" {
+			description = full.Description
+		}
+		if len(targets) == 0 {
+			for _, u := range full.Urls {
+				// URLs that did not reappear in the latest run are skipped:
+				// a clone re-checks the URLs the source last audited.
+				if u.State == domain.UrlStateMissing {
+					continue
+				}
+				targets = append(targets, u.URL)
+			}
+		}
+		if len(checkNames) == 0 {
+			var names []string
+			if err := s.db.WithContext(ctx).Model(&store.Issue{}).
+				Where("audit_id = ?", id).
+				Distinct("check_name").
+				Order("check_name").
+				Pluck("check_name", &names).Error; err != nil {
+				return nil, fmt.Errorf("duplicate audit: collect checks: %w", err)
+			}
+			checkNames = names
+		}
+	}
+
+	return s.CreateBlank(ctx, name+" DUPLICATE", description, targets, checkNames, src.Config)
 }

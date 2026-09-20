@@ -74,10 +74,11 @@ type Model struct {
 	tenantName   string
 	tenantPicked bool
 
-	// Tenant switcher overlay state.
-	switcherOpen    bool
-	switcherCursor  int
-	switcherConfirm *domain.Audit
+	// Tenant switcher overlay state. switcherPrompt holds an audit that is
+	// awaiting confirmation of a destructive action (delete or reset).
+	switcherOpen   bool
+	switcherCursor int
+	switcherPrompt *switcherPrompt
 
 	// Event cycle timing for the footer metrics: eventStart marks the
 	// beginning of the current (or most recent) user event, cycleActive
@@ -368,6 +369,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if tm, ok := msg.(tenantDeletedMsg); ok {
 		return m.handleTenantDeleted(tm)
+	}
+	if tm, ok := msg.(tenantResetMsg); ok {
+		return m.handleTenantReset(tm)
+	}
+	if tm, ok := msg.(tenantClonedMsg); ok {
+		return m.handleTenantCloned(tm)
 	}
 
 	// Global notifications.

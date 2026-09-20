@@ -11,35 +11,48 @@ import (
 	"gorm.io/gorm"
 )
 
-// issueSeveritiesAtLeast returns the stored severity values at or above the
-// given one, used to push the issues tab's minimum-severity filter into SQL.
-func issueSeveritiesAtLeast(min domain.Severity) []string {
-	minW := min.Weight()
-	out := make([]string, 0, len(domain.AllSeverities))
-	for _, s := range domain.AllSeverities {
-		if s.Weight() >= minW {
-			out = append(out, string(s))
-		}
+// applyIssueFilter pushes the dimensions of an issue filter into the query.
+// Each dimension becomes an IN set and the dimensions combine with AND; an
+// empty dimension is skipped, so the zero-value filter leaves the query
+// untouched.
+func applyIssueFilter(q *gorm.DB, filter domain.IssueFilter) *gorm.DB {
+	if len(filter.Severities) > 0 {
+		q = q.Where("severity IN ?", stringValues(filter.Severities))
+	}
+	if len(filter.Lifecycles) > 0 {
+		q = q.Where("lifecycle IN ?", stringValues(filter.Lifecycles))
+	}
+	if len(filter.CheckNames) > 0 {
+		q = q.Where("check_name IN ?", filter.CheckNames)
+	}
+	if len(filter.Categories) > 0 {
+		q = q.Where("category IN ?", stringValues(filter.Categories))
+	}
+	return q
+}
+
+// stringValues converts a slice of string-backed enum values for use in a
+// SQL IN clause.
+func stringValues[T ~string](values []T) []string {
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = string(v)
 	}
 	return out
 }
 
 // IssueDistribution counts the issues of the audit by severity, honoring the
-// given minimum severity (ignored when showAll is true). Issues are read
-// straight from the issues table: one row is one check result of one page,
-// so the counts match the issues tab's severity widget and their total is
-// the number of rows the tab would list.
-func (s *AuditService) IssueDistribution(ctx context.Context, auditID string, minSeverity domain.Severity, showAll bool) (domain.SeverityCounts, error) {
+// given filter. Issues are read straight from the issues table: one row is
+// one check result of one page, so the counts match the issues tab's
+// severity widget and their total is the number of rows the tab would list.
+func (s *AuditService) IssueDistribution(ctx context.Context, auditID string, filter domain.IssueFilter) (domain.SeverityCounts, error) {
 	type severityRow struct {
 		Severity string
 		Count    int
 	}
-	q := s.db.WithContext(ctx).Model(&store.Issue{}).
+	q := applyIssueFilter(s.db.WithContext(ctx).Model(&store.Issue{}).
 		Select("severity AS severity, count(*) AS count").
-		Where("audit_id = ?", auditID)
-	if !showAll && minSeverity.Weight() >= 0 {
-		q = q.Where("severity IN ?", issueSeveritiesAtLeast(minSeverity))
-	}
+		Where("audit_id = ?", auditID), filter)
 
 	var rows []severityRow
 	if err := q.Group("severity").Scan(&rows).Error; err != nil {
@@ -60,10 +73,11 @@ func (s *AuditService) IssueDistribution(ctx context.Context, auditID string, mi
 }
 
 // ListIssuesPage returns one page of issues of the audit in stored order
-// (rowid), starting at the given offset and capped at limit rows. Every row
-// is one check result of the page it was checked against; its URL is the
-// page's identity URL (the final URL, falling back to the audited URL).
-func (s *AuditService) ListIssuesPage(ctx context.Context, auditID string, minSeverity domain.Severity, showAll bool, limit, offset int) ([]*domain.Issue, error) {
+// (rowid), starting at the given offset and capped at limit rows, honoring
+// the given filter. Every row is one check result of the page it was checked
+// against; its URL is the page's identity URL (the final URL, falling back
+// to the audited URL).
+func (s *AuditService) ListIssuesPage(ctx context.Context, auditID string, filter domain.IssueFilter, limit, offset int) ([]*domain.Issue, error) {
 	if limit <= 0 {
 		limit = 250
 	}
@@ -71,11 +85,8 @@ func (s *AuditService) ListIssuesPage(ctx context.Context, auditID string, minSe
 		offset = 0
 	}
 
-	q := s.db.WithContext(ctx).Model(&store.Issue{}).
-		Where("audit_id = ?", auditID)
-	if !showAll && minSeverity.Weight() >= 0 {
-		q = q.Where("severity IN ?", issueSeveritiesAtLeast(minSeverity))
-	}
+	q := applyIssueFilter(s.db.WithContext(ctx).Model(&store.Issue{}).
+		Where("audit_id = ?", auditID), filter)
 
 	var models []store.Issue
 	if err := q.Order("rowid").Limit(limit).Offset(offset).Find(&models).Error; err != nil {
@@ -87,6 +98,21 @@ func (s *AuditService) ListIssuesPage(ctx context.Context, auditID string, minSe
 		issues = append(issues, models[i].ToDomain())
 	}
 	return issues, nil
+}
+
+// IssueCheckNames returns the distinct check names observed in the stored
+// issues of the audit, ordered by name. The issues tab uses them as the
+// options of its check filter.
+func (s *AuditService) IssueCheckNames(ctx context.Context, auditID string) ([]string, error) {
+	var names []string
+	if err := s.db.WithContext(ctx).Model(&store.Issue{}).
+		Where("audit_id = ?", auditID).
+		Distinct().
+		Order("check_name").
+		Pluck("check_name", &names).Error; err != nil {
+		return nil, fmt.Errorf("list issue check names: %w", err)
+	}
+	return names, nil
 }
 
 // DashboardMetrics aggregates the state an audit dashboard shows without

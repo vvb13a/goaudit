@@ -24,6 +24,46 @@ type tenantDeletedMsg struct {
 	err  error
 }
 
+// tenantResetMsg reports the outcome of resetting the run data of a tenant
+// (audit): its issues, URLs and snapshots were cleared.
+type tenantResetMsg struct {
+	id   string
+	name string
+	err  error
+}
+
+// tenantClonedMsg reports the outcome of duplicating a tenant (audit)
+// without its run data.
+type tenantClonedMsg struct {
+	audit *domain.Audit
+	err   error
+}
+
+// switcherAction is a destructive action awaiting confirmation in the tenant
+// switcher.
+type switcherAction string
+
+const (
+	switcherActionDelete switcherAction = "delete"
+	switcherActionReset  switcherAction = "reset"
+)
+
+// switcherPrompt is one audit pending a destructive confirmation.
+type switcherPrompt struct {
+	audit  *domain.Audit
+	action switcherAction
+}
+
+// promptText explains the destructive action that is pending confirmation.
+func (p *switcherPrompt) promptText() string {
+	switch p.action {
+	case switcherActionReset:
+		return fmt.Sprintf("Reset audit '%s'?\n\nDeletes its URLs, issues, run history and exports.\nThe audit configuration is kept.\n\nPress y to confirm or any other key to cancel.", p.audit.Name)
+	default:
+		return fmt.Sprintf("Delete audit '%s'?\n\nThis cannot be undone.\n\nPress y to confirm or any other key to cancel.", p.audit.Name)
+	}
+}
+
 // loadTenantsCmd refreshes the tenant (audit) list of the switcher.
 func (m Model) loadTenantsCmd() tea.Cmd {
 	return func() tea.Msg {
@@ -56,7 +96,7 @@ func (m Model) handleTenantsLoaded(msg tenantsLoadedMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleTenantDeleted(msg tenantDeletedMsg) (tea.Model, tea.Cmd) {
-	m.switcherConfirm = nil
+	m.switcherPrompt = nil
 
 	if msg.err != nil {
 		return m.pushNotification(Notification{
@@ -98,6 +138,76 @@ func (m Model) deleteTenantCmd(a *domain.Audit) tea.Cmd {
 	}
 }
 
+// resetTenantCmd clears the run data of the given audit (URLs, issues,
+// snapshots and exports) while keeping the audit record and reports back
+// through tenantResetMsg.
+func (m Model) resetTenantCmd(a *domain.Audit) tea.Cmd {
+	return func() tea.Msg {
+		err := m.deps.AuditService.ResetData(context.Background(), a.ID)
+		return tenantResetMsg{id: a.ID, name: a.Name, err: err}
+	}
+}
+
+// cloneTenantCmd duplicates the given audit without its run data and reports
+// back through tenantClonedMsg.
+func (m Model) cloneTenantCmd(a *domain.Audit) tea.Cmd {
+	return func() tea.Msg {
+		audit, err := m.deps.AuditService.Duplicate(context.Background(), a.ID)
+		return tenantClonedMsg{audit: audit, err: err}
+	}
+}
+
+// handleTenantReset updates the current tenant after its run data was
+// cleared: the audit stays selected but every view that showed its data is
+// released and reloaded empty.
+func (m Model) handleTenantReset(msg tenantResetMsg) (tea.Model, tea.Cmd) {
+	m.switcherPrompt = nil
+
+	if msg.err != nil {
+		return m.pushNotification(Notification{
+			Kind: NotificationDanger,
+			Text: fmt.Sprintf("Reset failed: %v", msg.err),
+		}), nil
+	}
+
+	// The audit row moved to the top of the switcher list (its started_at
+	// refreshed); reload the list even when another audit is selected.
+	var cmds []tea.Cmd
+	if msg.id == m.tenantID {
+		m.dashboard = m.dashboard.release()
+		m = m.releaseView(UrlsView)
+		m = m.releaseView(IssuesView)
+		m = m.releaseView(TimelineView)
+		cmds = append(cmds, m.activateCmd())
+	}
+	cmds = append(cmds, m.loadTenantsCmd())
+
+	return m.pushNotification(Notification{
+		Kind: NotificationSuccess,
+		Text: fmt.Sprintf("Reset audit '%s'", msg.name),
+	}), tea.Batch(cmds...)
+}
+
+// handleTenantCloned refreshes the switcher list so the duplicate appears.
+func (m Model) handleTenantCloned(msg tenantClonedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		return m.pushNotification(Notification{
+			Kind: NotificationDanger,
+			Text: fmt.Sprintf("Clone failed: %v", msg.err),
+		}), nil
+	}
+	if msg.audit == nil {
+		return m.pushNotification(Notification{
+			Kind: NotificationDanger,
+			Text: "Clone failed: no audit returned",
+		}), nil
+	}
+	return m.pushNotification(Notification{
+		Kind: NotificationSuccess,
+		Text: fmt.Sprintf("Cloned audit '%s'", msg.audit.Name),
+	}), m.loadTenantsCmd()
+}
+
 // setTenant updates the current tenant shown in the header and audit view.
 func (m Model) setTenant(id, name string) Model {
 	m.tenantID = id
@@ -109,7 +219,7 @@ func (m Model) setTenant(id, name string) Model {
 // tenant when it is still part of the list.
 func (m Model) openSwitcher() Model {
 	m.switcherOpen = true
-	m.switcherConfirm = nil
+	m.switcherPrompt = nil
 	m.clampSwitcherCursor()
 	for i, t := range m.tenants {
 		if t.ID == m.tenantID {
@@ -122,22 +232,29 @@ func (m Model) openSwitcher() Model {
 
 func (m Model) closeSwitcher() Model {
 	m.switcherOpen = false
-	m.switcherConfirm = nil
+	m.switcherPrompt = nil
 	return m
 }
 
 // handleSwitcherKey processes a key while the tenant switcher overlay is
 // open. All other keys are consumed by the switcher.
 func (m Model) handleSwitcherKey(key tea.KeyMsg) (Model, tea.Cmd) {
-	// Deletion confirmation supersedes the list keys.
-	if m.switcherConfirm != nil {
+	// A destructive confirmation supersedes the list keys.
+	if m.switcherPrompt != nil {
 		if key.String() == "y" || key.String() == "Y" {
-			cmd := m.deleteTenantCmd(m.switcherConfirm)
-			m.switcherConfirm = nil
+			audit := m.switcherPrompt.audit
+			var cmd tea.Cmd
+			switch m.switcherPrompt.action {
+			case switcherActionReset:
+				cmd = m.resetTenantCmd(audit)
+			default:
+				cmd = m.deleteTenantCmd(audit)
+			}
+			m.switcherPrompt = nil
 			m.switcherOpen = false
 			return m, cmd
 		}
-		m.switcherConfirm = nil
+		m.switcherPrompt = nil
 		return m, nil
 	}
 
@@ -175,7 +292,17 @@ func (m Model) handleSwitcherKey(key tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 	case "d":
 		if t := m.selTenant(); t != nil {
-			m.switcherConfirm = t
+			m.switcherPrompt = &switcherPrompt{audit: t, action: switcherActionDelete}
+		}
+		return m, nil
+	case "x":
+		if t := m.selTenant(); t != nil {
+			m.switcherPrompt = &switcherPrompt{audit: t, action: switcherActionReset}
+		}
+		return m, nil
+	case "c":
+		if t := m.selTenant(); t != nil {
+			return m, m.cloneTenantCmd(t)
 		}
 		return m, nil
 	case "e":
@@ -198,7 +325,7 @@ func (m Model) switchToTenant(t *domain.Audit) (Model, tea.Cmd) {
 	m = m.setTenant(t.ID, t.Name)
 	m.tenantPicked = true
 	m.switcherOpen = false
-	m.switcherConfirm = nil
+	m.switcherPrompt = nil
 	m.nav = m.nav.Select(DashboardView)
 
 	// Release the list views of the previous tenant so their loaded pages
@@ -233,8 +360,8 @@ func (m Model) clampSwitcherCursor() {
 
 // switcherView renders the tenant picker overlay with its action hints.
 func (m Model) switcherView() string {
-	if c := m.switcherConfirm; c != nil {
-		return fmt.Sprintf("Delete audit '%s'?\n\nThis cannot be undone.\n\nPress y to confirm or any other key to cancel.", c.Name)
+	if p := m.switcherPrompt; p != nil {
+		return p.promptText()
 	}
 
 	var b strings.Builder
@@ -267,10 +394,13 @@ func (m Model) switcherView() string {
 }
 
 func (m Model) switcherHelp() string {
-	if m.switcherConfirm != nil {
+	if p := m.switcherPrompt; p != nil {
+		if p.action == switcherActionReset {
+			return "y: Reset  •  any other key: Cancel"
+		}
 		return "y: Delete  •  any other key: Cancel"
 	}
-	return "↑/↓: Move  •  Enter: Open  •  n: New Audit  •  r: Rerun  •  d: Delete  •  e: Excel  •  w: HTML  •  Esc: Close"
+	return "↑/↓: Move  •  Enter: Open  •  n: New Audit  •  r: Rerun  •  d: Delete  •  x: Reset  •  c: Duplicate  •  e: Excel  •  w: HTML  •  Esc: Close"
 }
 
 // ---- Exports ----

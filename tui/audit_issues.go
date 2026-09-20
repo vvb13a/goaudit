@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -11,7 +12,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/vvb13a/goaudit/domain"
-	"github.com/vvb13a/goaudit/service"
 )
 
 // issuesPageSize is how many issue rows one page of the issues tab holds.
@@ -21,15 +21,16 @@ const issuesPageSize = 250
 
 // issuesPageLoadedMsg carries one page of issues of the current audit
 // (tenant) together with the severity distribution of the whole filtered
-// list. auditID, offset and showAll guard against stale responses.
+// list and the check names of the audit (the options of the check filter).
+// auditID, offset and filterKey guard against stale responses.
 type issuesPageLoadedMsg struct {
-	auditID     string
-	offset      int
-	showAll     bool
-	issues      []*domain.Issue
-	counts      domain.SeverityCounts
-	minSeverity domain.Severity
-	err         error
+	auditID    string
+	offset     int
+	filterKey  string
+	issues     []*domain.Issue
+	counts     domain.SeverityCounts
+	checkNames []string
+	err        error
 }
 
 // AuditIssuesModel lists the stored issues of the current audit (tenant) in
@@ -37,9 +38,10 @@ type issuesPageLoadedMsg struct {
 // right. Every row is one check result of the page it was checked against:
 // the URL column is the issue's own page URL. Issues are browsed in pages of
 // issuesPageSize rows that load on demand, so only one page is ever
-// resident. By default only real issues are shown — severity notice and
-// worse per the audit's "min_issue_severity" config — with a toggle to show
-// everything. A severity stat widget spans the top of the tab.
+// resident. A multi-select filter (severity, lifecycle, check, category)
+// narrows the list; by default only real issues are shown (info and success
+// are hidden until selected). A severity stat widget spans the top of the
+// tab.
 type AuditIssuesModel struct {
 	deps    Deps
 	auditID string
@@ -47,11 +49,20 @@ type AuditIssuesModel struct {
 	issues  []*domain.Issue
 	table   table.Model
 
-	minSeverity domain.Severity
-	showAll     bool
-	offset      int
-	total       int
-	counts      domain.SeverityCounts
+	// filter is the multi-select filter of the list; checkNames holds the
+	// check options observed in the audit for the filter overlay.
+	filter     issueFilterState
+	checkNames []string
+
+	offset int
+	total  int
+	counts domain.SeverityCounts
+
+	// filterOpen is true while the filter overlay is shown; filterCursor
+	// indexes filterRows and filterOffset is the first row of its window.
+	filterOpen   bool
+	filterCursor int
+	filterOffset int
 
 	// cursorTo and cursorToLast steer the table cursor of the page that is
 	// loading: crossing into a page from above lands on its last row, all
@@ -67,34 +78,42 @@ func NewAuditIssuesModel(deps Deps) AuditIssuesModel {
 	return AuditIssuesModel{
 		deps:     deps,
 		table:    table.New(),
+		filter:   defaultIssueFilter(),
 		cursorTo: -1,
 	}
 }
 
-// NavigationEnabled lets the tab leave and re-enter freely (list only).
+// NavigationEnabled lets the tab leave and re-enter freely (list only). It
+// is disabled while the filter overlay consumes the keys.
 func (m AuditIssuesModel) NavigationEnabled() bool {
-	return true
+	return !m.filterOpen
 }
 
 // Track points the tab at the given audit and resets it so the next
-// activation reloads its first page.
+// activation reloads its first page. Switching audits also resets the
+// filter, whose check options belong to the previous audit.
 func (m AuditIssuesModel) Track(id string) AuditIssuesModel {
 	if m.auditID != id {
 		m = m.release()
+		m.filter = defaultIssueFilter()
 	}
 	m.auditID = id
 	return m
 }
 
 // release drops the loaded page and counts so the memory is returned before
-// the tab sits in the background. The next activation reloads them.
+// the tab sits in the background. The next activation reloads them. The
+// filter selection is tiny and deliberately kept.
 func (m AuditIssuesModel) release() AuditIssuesModel {
 	m.loaded = false
 	m.issues = nil
 	m.offset = 0
 	m.total = 0
 	m.counts = domain.SeverityCounts{}
-	m.showAll = false
+	m.checkNames = nil
+	m.filterOpen = false
+	m.filterCursor = 0
+	m.filterOffset = 0
 	m.cursorTo = -1
 	m.cursorToLast = false
 	m.table = table.New()
@@ -126,31 +145,35 @@ func (m AuditIssuesModel) clampOffset(offset int) int {
 }
 
 // loadCmd loads the page at the given offset for the current filter state.
-// The returned message carries the stored config threshold, the severity
-// distribution of the whole filtered list and the page rows.
+// The returned message carries the severity distribution of the whole
+// filtered list, the check names of the audit and the page rows.
 func (m AuditIssuesModel) loadCmd(offset int) tea.Cmd {
 	offset = m.clampOffset(offset)
+	filter := m.issueFilter()
+	key := issueFilterKey(m.filter)
 	return func() tea.Msg {
-		cfg, err := m.deps.AuditService.GetConfig(context.Background(), m.auditID)
-		if err != nil {
-			return issuesPageLoadedMsg{auditID: m.auditID, offset: offset, showAll: m.showAll, err: err}
+		fail := func(err error) tea.Msg {
+			return issuesPageLoadedMsg{auditID: m.auditID, offset: offset, filterKey: key, err: err}
 		}
-		minSeverity := minIssueSeverity(cfg)
-		counts, err := m.deps.AuditService.IssueDistribution(context.Background(), m.auditID, minSeverity, m.showAll)
+		counts, err := m.deps.AuditService.IssueDistribution(context.Background(), m.auditID, filter)
 		if err != nil {
-			return issuesPageLoadedMsg{auditID: m.auditID, offset: offset, showAll: m.showAll, err: err}
+			return fail(err)
 		}
-		issues, err := m.deps.AuditService.ListIssuesPage(context.Background(), m.auditID, minSeverity, m.showAll, issuesPageSize, offset)
+		checkNames, err := m.deps.AuditService.IssueCheckNames(context.Background(), m.auditID)
 		if err != nil {
-			return issuesPageLoadedMsg{auditID: m.auditID, offset: offset, showAll: m.showAll, err: err}
+			return fail(err)
+		}
+		issues, err := m.deps.AuditService.ListIssuesPage(context.Background(), m.auditID, filter, issuesPageSize, offset)
+		if err != nil {
+			return fail(err)
 		}
 		return issuesPageLoadedMsg{
-			auditID:     m.auditID,
-			offset:      offset,
-			showAll:     m.showAll,
-			issues:      issues,
-			counts:      counts,
-			minSeverity: minSeverity,
+			auditID:    m.auditID,
+			offset:     offset,
+			filterKey:  key,
+			issues:     issues,
+			counts:     counts,
+			checkNames: checkNames,
 		}
 	}
 }
@@ -164,30 +187,35 @@ func (m AuditIssuesModel) Update(msg tea.Msg) (AuditIssuesModel, tea.Cmd) {
 		return m, nil
 
 	case issuesPageLoadedMsg:
-		if msg.auditID != m.auditID || msg.offset != m.offset || msg.showAll != m.showAll {
+		if msg.auditID != m.auditID || msg.offset != m.offset || msg.filterKey != m.filterKey() {
 			return m, nil
 		}
 		m.loaded = true
 		if msg.err != nil {
 			return m, NotifyDanger(fmt.Sprintf("Failed to load issues: %v", msg.err))
 		}
-		m.minSeverity = msg.minSeverity
 		m.issues = msg.issues
 		m.counts = msg.counts
-		m.total = msg.counts.Total()
+		m.total = m.counts.Total()
+		m.checkNames = msg.checkNames
+		if m.filterOpen {
+			m.clampFilterCursor()
+		}
 		m.offset = m.clampOffset(m.offset)
 		m.rebuildTable()
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.filterOpen {
+			return m.handleFilterKey(msg)
+		}
 		switch msg.String() {
 		case "q":
 			return m, tea.Quit
-		case "a":
-			m.showAll = !m.showAll
-			m.cursorTo, m.cursorToLast = 0, false
-			m.offset = 0
-			return m.jumpToPage(m.offset)
+		case "f":
+			m.filterOpen = true
+			m.clampFilterCursor()
+			return m, nil
 		case "o":
 			if iss := m.selIssue(); iss != nil && iss.URL != "" {
 				return m, openInBrowserCmd(iss.URL)
@@ -245,6 +273,368 @@ func (m AuditIssuesModel) Update(msg tea.Msg) (AuditIssuesModel, tea.Cmd) {
 	return m, cmd
 }
 
+// ---- Filter ----
+
+// Filter dimensions of the issues tab.
+const (
+	filterDimSeverity = iota
+	filterDimLifecycle
+	filterDimCheck
+	filterDimCategory
+)
+
+// issueFilterState is the multi-select filter of the issues tab: one set of
+// selected values per dimension. An empty set means the dimension is not
+// filtered, so all of its values are included. Values are the canonical
+// strings of their domain enum, or the check name for the check dimension.
+type issueFilterState struct {
+	severities map[string]bool
+	lifecycles map[string]bool
+	checks     map[string]bool
+	categories map[string]bool
+}
+
+// newIssueFilterState returns a state without any selection, i.e. a filter
+// that includes every issue.
+func newIssueFilterState() issueFilterState {
+	return issueFilterState{
+		severities: map[string]bool{},
+		lifecycles: map[string]bool{},
+		checks:     map[string]bool{},
+		categories: map[string]bool{},
+	}
+}
+
+// defaultIssueFilter returns the filter the tab starts with: every lifecycle,
+// check and category is included, while severities below notice (info and
+// success) stay hidden until the user selects them.
+func defaultIssueFilter() issueFilterState {
+	f := newIssueFilterState()
+	f.severities[string(domain.SeverityFatal)] = true
+	f.severities[string(domain.SeverityError)] = true
+	f.severities[string(domain.SeverityWarning)] = true
+	f.severities[string(domain.SeverityNotice)] = true
+	return f
+}
+
+// set returns the selected-value set of a filter dimension.
+func (f issueFilterState) set(dim int) map[string]bool {
+	switch dim {
+	case filterDimSeverity:
+		return f.severities
+	case filterDimLifecycle:
+		return f.lifecycles
+	case filterDimCheck:
+		return f.checks
+	default:
+		return f.categories
+	}
+}
+
+// included reports whether a value of a dimension is part of the filtered
+// set. A dimension without explicit selections includes every value.
+func (f issueFilterState) included(dim int, value string) bool {
+	set := f.set(dim)
+	return len(set) == 0 || set[value]
+}
+
+// issueFilter converts the selection state into the query filter: dimensions
+// without selections are left out entirely.
+func (m AuditIssuesModel) issueFilter() domain.IssueFilter {
+	f := domain.IssueFilter{}
+	for _, s := range domain.AllSeverities {
+		if m.filter.severities[string(s)] {
+			f.Severities = append(f.Severities, s)
+		}
+	}
+	for _, lc := range domain.AllLifecycles {
+		if m.filter.lifecycles[string(lc)] {
+			f.Lifecycles = append(f.Lifecycles, lc)
+		}
+	}
+	for name := range m.filter.checks {
+		f.CheckNames = append(f.CheckNames, name)
+	}
+	sort.Strings(f.CheckNames)
+	for _, c := range domain.AllCategories {
+		if m.filter.categories[string(c)] {
+			f.Categories = append(f.Categories, c)
+		}
+	}
+	return f
+}
+
+// filterKey is a deterministic signature of a selection state, used to
+// discard stale page loads.
+func issueFilterKey(f issueFilterState) string {
+	var b strings.Builder
+	for _, s := range domain.AllSeverities {
+		if f.severities[string(s)] {
+			b.WriteString("s" + string(s) + ",")
+		}
+	}
+	for _, lc := range domain.AllLifecycles {
+		if f.lifecycles[string(lc)] {
+			b.WriteString("l" + string(lc) + ",")
+		}
+	}
+	names := make([]string, 0, len(f.checks))
+	for name := range f.checks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		b.WriteString(fmt.Sprintf("c%q,", name))
+	}
+	for _, c := range domain.AllCategories {
+		if f.categories[string(c)] {
+			b.WriteString("g" + string(c) + ",")
+		}
+	}
+	return b.String()
+}
+
+// filterKey is the signature of the model's current filter.
+func (m AuditIssuesModel) filterKey() string {
+	return issueFilterKey(m.filter)
+}
+
+// filtersActive reports whether the user narrowed the list beyond the tab's
+// default severity selection.
+func (m AuditIssuesModel) filtersActive() bool {
+	return m.filterKey() != issueFilterKey(defaultIssueFilter())
+}
+
+// filterRow is one line of the filter overlay: either a section header or a
+// selectable value of a dimension.
+type filterRow struct {
+	header string
+	dim    int
+	value  string
+	label  string
+}
+
+// filterRows lays the filter options out as severity, lifecycle, check and
+// category sections.
+func (m AuditIssuesModel) filterRows() []filterRow {
+	rows := make([]filterRow, 0, 20+len(m.checkNames))
+	rows = append(rows, filterRow{header: "Severity"})
+	for i := len(domain.AllSeverities) - 1; i >= 0; i-- {
+		s := domain.AllSeverities[i]
+		rows = append(rows, filterRow{dim: filterDimSeverity, value: string(s), label: strings.ToUpper(string(s))})
+	}
+	rows = append(rows, filterRow{header: "Lifecycle"})
+	for _, lc := range domain.AllLifecycles {
+		rows = append(rows, filterRow{dim: filterDimLifecycle, value: string(lc), label: string(lc)})
+	}
+	if len(m.checkNames) > 0 {
+		rows = append(rows, filterRow{header: "Check"})
+		for _, name := range m.checkNames {
+			rows = append(rows, filterRow{dim: filterDimCheck, value: name, label: name})
+		}
+	}
+	rows = append(rows, filterRow{header: "Category"})
+	for _, c := range domain.AllCategories {
+		rows = append(rows, filterRow{dim: filterDimCategory, value: string(c), label: c.DisplayName()})
+	}
+	return rows
+}
+
+// filterWindowHeight is how many filter rows fit into the overlay for the
+// current terminal height (borders, title, hint, summary and blanks aside).
+func (m AuditIssuesModel) filterWindowHeight() int {
+	h := m.height - 7
+	if h < 1 {
+		return 1
+	}
+	return h
+}
+
+// clampFilterCursor snaps the filter cursor onto a selectable row and keeps
+// it inside the visible window.
+func (m *AuditIssuesModel) clampFilterCursor() {
+	rows := m.filterRows()
+	if len(rows) == 0 {
+		m.filterCursor = 0
+		return
+	}
+	if m.filterCursor < 0 || m.filterCursor >= len(rows) || rows[m.filterCursor].header != "" {
+		m.filterCursor = 0
+		for i, row := range rows {
+			if row.header == "" {
+				m.filterCursor = i
+				break
+			}
+		}
+	}
+	m.ensureFilterCursorVisible(len(rows))
+}
+
+// moveFilterCursor moves the filter cursor by delta rows, skipping headers.
+func (m *AuditIssuesModel) moveFilterCursor(delta int) {
+	rows := m.filterRows()
+	if len(rows) == 0 {
+		return
+	}
+	idx := m.filterCursor + delta
+	for idx >= 0 && idx < len(rows) && rows[idx].header != "" {
+		idx += delta
+	}
+	if idx < 0 || idx >= len(rows) {
+		return
+	}
+	m.filterCursor = idx
+	m.ensureFilterCursorVisible(len(rows))
+}
+
+// ensureFilterCursorVisible scrolls the filter window so the cursor is in it.
+func (m *AuditIssuesModel) ensureFilterCursorVisible(total int) {
+	visible := m.filterWindowHeight()
+	if visible > total {
+		visible = total
+	}
+	if visible < 1 {
+		visible = 1
+	}
+	if m.filterCursor < m.filterOffset {
+		m.filterOffset = m.filterCursor
+	}
+	if m.filterCursor >= m.filterOffset+visible {
+		m.filterOffset = m.filterCursor - visible + 1
+	}
+	if m.filterOffset < 0 {
+		m.filterOffset = 0
+	}
+}
+
+// selFilterRow returns the selectable row under the filter cursor.
+func (m AuditIssuesModel) selFilterRow() (filterRow, bool) {
+	rows := m.filterRows()
+	if m.filterCursor < 0 || m.filterCursor >= len(rows) {
+		return filterRow{}, false
+	}
+	row := rows[m.filterCursor]
+	if row.header != "" {
+		return filterRow{}, false
+	}
+	return row, true
+}
+
+// filterValues lists the selectable values of a dimension in display order.
+func (m AuditIssuesModel) filterValues(dim int) []string {
+	switch dim {
+	case filterDimSeverity:
+		out := make([]string, 0, len(domain.AllSeverities))
+		for _, s := range domain.AllSeverities {
+			out = append(out, string(s))
+		}
+		return out
+	case filterDimLifecycle:
+		out := make([]string, 0, len(domain.AllLifecycles))
+		for _, lc := range domain.AllLifecycles {
+			out = append(out, string(lc))
+		}
+		return out
+	case filterDimCheck:
+		return append([]string(nil), m.checkNames...)
+	default:
+		out := make([]string, 0, len(domain.AllCategories))
+		for _, c := range domain.AllCategories {
+			out = append(out, string(c))
+		}
+		return out
+	}
+}
+
+// toggleFilterValue flips one value of a dimension. A dimension without
+// selections includes everything, so the first toggle turns it into an
+// explicit "everything except this value" selection.
+func (m AuditIssuesModel) toggleFilterValue(dim int, value string) AuditIssuesModel {
+	set := m.filter.set(dim)
+	if len(set) == 0 {
+		for _, v := range m.filterValues(dim) {
+			if v != value {
+				set[v] = true
+			}
+		}
+		return m
+	}
+	if set[value] {
+		delete(set, value)
+	} else {
+		set[value] = true
+	}
+	return m
+}
+
+// onlyFilterValue narrows a dimension to a single value.
+func (m AuditIssuesModel) onlyFilterValue(dim int, value string) AuditIssuesModel {
+	set := m.filter.set(dim)
+	for v := range set {
+		delete(set, v)
+	}
+	set[value] = true
+	return m
+}
+
+// clearFilterDimension removes the selections of one dimension, which makes
+// it unfiltered again (all values included).
+func (m AuditIssuesModel) clearFilterDimension(dim int) AuditIssuesModel {
+	set := m.filter.set(dim)
+	for v := range set {
+		delete(set, v)
+	}
+	return m
+}
+
+// handleFilterKey processes a key while the filter overlay is open. Toggling
+// a value reloads the first page under the new filter, so the list behind
+// the overlay updates live.
+func (m AuditIssuesModel) handleFilterKey(key tea.KeyMsg) (AuditIssuesModel, tea.Cmd) {
+	switch key.String() {
+	case "esc", "f", "q":
+		m.filterOpen = false
+		return m, nil
+	case "up", "k":
+		m.moveFilterCursor(-1)
+		return m, nil
+	case "down", "j":
+		m.moveFilterCursor(1)
+		return m, nil
+	case " ", "enter":
+		if row, ok := m.selFilterRow(); ok {
+			m = m.toggleFilterValue(row.dim, row.value)
+			return m.reloadFiltered()
+		}
+		return m, nil
+	case "o":
+		if row, ok := m.selFilterRow(); ok {
+			m = m.onlyFilterValue(row.dim, row.value)
+			return m.reloadFiltered()
+		}
+		return m, nil
+	case "a":
+		if row, ok := m.selFilterRow(); ok {
+			m = m.clearFilterDimension(row.dim)
+			return m.reloadFiltered()
+		}
+		return m, nil
+	case "c":
+		m.filter = newIssueFilterState()
+		m.filterOffset = 0
+		return m.reloadFiltered()
+	}
+	return m, nil
+}
+
+// reloadFiltered reloads the first page under the current filter while
+// keeping the overlay open.
+func (m AuditIssuesModel) reloadFiltered() (AuditIssuesModel, tea.Cmd) {
+	m.cursorTo, m.cursorToLast = 0, false
+	m.offset = 0
+	return m, m.loadCmd(0)
+}
+
 // jumpToPage moves the list to the start of the given page and loads it,
 // keeping the previous page visible until the new one arrives.
 func (m AuditIssuesModel) jumpToPage(offset int) (AuditIssuesModel, tea.Cmd) {
@@ -265,6 +655,15 @@ func (m AuditIssuesModel) selIssue() *domain.Issue {
 // ---- Rendering ----
 
 func (m AuditIssuesModel) View() string {
+	view := m.listView()
+	if m.filterOpen {
+		return overlay(view, m.filterView(), m.width, m.height)
+	}
+	return view
+}
+
+// listView renders the issues list without the filter overlay.
+func (m AuditIssuesModel) listView() string {
 	if m.auditID == "" {
 		return centerLines(helpStyle.Render("No audit selected. Press Ctrl+O to open the audit switcher."), m.width)
 	}
@@ -272,10 +671,10 @@ func (m AuditIssuesModel) View() string {
 		return "Loading issues..."
 	}
 	if m.total == 0 {
-		if m.showAll {
-			return centerLines(helpStyle.Render("No issues for this audit."), m.width)
+		if m.filtersActive() {
+			return centerLines(helpStyle.Render("No issues match the current filters. Press 'f' to adjust them."), m.width)
 		}
-		return centerLines(helpStyle.Render("No issues at or above "+string(m.minSeverity)+". Press 'a' to show all."), m.width)
+		return centerLines(helpStyle.Render("No issues at or above notice. Press 'f' to include info and success."), m.width)
 	}
 
 	var b strings.Builder
@@ -302,6 +701,9 @@ func (m AuditIssuesModel) pageStatus() string {
 	label := fmt.Sprintf("Rows %d–%d of %d", first, last, m.total)
 	if m.pageCount() > 1 {
 		label += fmt.Sprintf("  •  Page %d/%d", m.offset/issuesPageSize+1, m.pageCount())
+	}
+	if m.filtersActive() {
+		label += "  •  Filtered"
 	}
 	return helpStyle.Render(label)
 }
@@ -572,15 +974,81 @@ func centerCell(value string, inner int) string {
 	return "│" + strings.Repeat(" ", pad) + value + strings.Repeat(" ", right) + "│"
 }
 
-// minIssueSeverity resolves the tab's filter threshold from the audit's
-// stored config, falling back to notice.
-func minIssueSeverity(a *domain.Audit) domain.Severity {
-	cfg := service.MergeConfig(*service.DefaultConfig(), a.Config)
-	sev, err := domain.ParseSeverity(cfg.MinIssueSeverity)
-	if err != nil {
-		return domain.SeverityNotice
+// filterView renders the filter overlay: the four option sections in a
+// scrollable window plus a summary of the active selections.
+func (m AuditIssuesModel) filterView() string {
+	innerW := m.width - 8
+	if innerW > 64 {
+		innerW = 64
 	}
-	return sev
+	if innerW < 24 {
+		innerW = 24
+	}
+
+	rows := m.filterRows()
+	visible := m.filterWindowHeight()
+	if visible > len(rows) {
+		visible = len(rows)
+	}
+	offset := m.filterOffset
+	if maxOffset := len(rows) - visible; offset > maxOffset {
+		offset = maxOffset
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var b strings.Builder
+	b.WriteString(clipToWidth(titleStyle.Render("Issue Filters"), innerW))
+	b.WriteString("\n")
+	b.WriteString(clipToWidth(helpStyle.Render("↑/↓ Move  •  Space Toggle  •  o Only  •  a All  •  c Clear"), innerW))
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat(" ", innerW))
+	b.WriteString("\n")
+
+	for i := offset; i < offset+visible && i < len(rows); i++ {
+		b.WriteString(m.filterRowLine(rows[i], i == m.filterCursor, innerW))
+		b.WriteString("\n")
+	}
+
+	b.WriteString(strings.Repeat(" ", innerW))
+	b.WriteString("\n")
+	b.WriteString(clipToWidth(helpStyle.Render(m.filterSummary()), innerW))
+	return b.String()
+}
+
+// filterRowLine renders one row of the filter overlay, checked when the
+// value is part of the filtered set.
+func (m AuditIssuesModel) filterRowLine(row filterRow, active bool, innerW int) string {
+	if row.header != "" {
+		return clipToWidth(helpStyle.Render(strings.ToUpper(row.header)), innerW)
+	}
+	cursor := "  "
+	if active {
+		cursor = labelStyle.Render("> ")
+	}
+	checked := "[ ]"
+	if m.filter.included(row.dim, row.value) {
+		checked = labelStyle.Render("[x]")
+	}
+	return clipToWidth(fmt.Sprintf("%s%s %s", cursor, checked, row.label), innerW)
+}
+
+// filterSummary reports how many values of each dimension are selected. A
+// dimension without selections is shown as "all".
+func (m AuditIssuesModel) filterSummary() string {
+	dim := func(selected, total int) string {
+		if selected == 0 {
+			return "all"
+		}
+		return fmt.Sprintf("%d/%d", selected, total)
+	}
+	return fmt.Sprintf("Selected: Severity %s • Lifecycle %s • Check %s • Category %s",
+		dim(len(m.filter.severities), len(domain.AllSeverities)),
+		dim(len(m.filter.lifecycles), len(domain.AllLifecycles)),
+		dim(len(m.filter.checks), len(m.checkNames)),
+		dim(len(m.filter.categories), len(domain.AllCategories)),
+	)
 }
 
 func (m *AuditIssuesModel) rebuildTable() {
@@ -703,8 +1171,11 @@ func (m AuditIssuesModel) Help() string {
 	if m.auditID == "" {
 		return "Ctrl+O: Audits"
 	}
-	if m.pageCount() > 1 {
-		return "↑/↓: Issue  •  n/p: Page  •  g/G: First/Last  •  r: Recheck URL  •  a: Toggle All  •  o: Open URL  •  Ctrl+O: Audits  •  q: Quit"
+	if m.filterOpen {
+		return "↑/↓: Move  •  Space: Toggle  •  o: Only  •  a: All  •  c: Clear  •  Esc: Close"
 	}
-	return "↑/↓: Issue  •  r: Recheck URL  •  a: Toggle All  •  o: Open URL  •  Ctrl+O: Audits  •  q: Quit"
+	if m.pageCount() > 1 {
+		return "↑/↓: Issue  •  n/p: Page  •  g/G: First/Last  •  r: Recheck URL  •  f: Filter  •  o: Open URL  •  Ctrl+O: Audits  •  q: Quit"
+	}
+	return "↑/↓: Issue  •  r: Recheck URL  •  f: Filter  •  o: Open URL  •  Ctrl+O: Audits  •  q: Quit"
 }

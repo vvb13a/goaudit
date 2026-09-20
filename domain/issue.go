@@ -17,6 +17,18 @@ const (
 	LifecycleDegraded   IssueLifecycle = "degraded"
 )
 
+// AllLifecycles lists every lifecycle in display order: fresh states first,
+// the transitions of an already-known issue after them.
+var AllLifecycles = []IssueLifecycle{
+	LifecycleNew,
+	LifecycleOpen,
+	LifecycleResurfaced,
+	LifecycleDegraded,
+	LifecycleImproved,
+	LifecycleResolved,
+	LifecyclePassed,
+}
+
 // ComputeLifecycle derives the lifecycle of an issue from its prior severity
 // and its current severity:
 //
