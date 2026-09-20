@@ -330,11 +330,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.goToView(prev.Active())
 			}
 		case "esc":
-			// The audit editors use Esc as their way back to the audit view
-			// (Tab cycles their fields, so it cannot leave the view).
-			switch m.nav.Active() {
-			case ConfigView:
-				return m.goToView(DashboardView)
+			// The config editor uses Esc to cancel edit mode; in view mode
+			// it is not a navigation key (q returns to the dashboard).
+			if m.nav.Active() == ConfigView {
+				break
+			}
+		case "q":
+			// Quit from the config view while it is being viewed, matching
+			// the other tabs; while editing, q belongs to the focused field.
+			if m.nav.Active() == ConfigView && !m.config.Editing() {
+				return m, tea.Quit
 			}
 		}
 

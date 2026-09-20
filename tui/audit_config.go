@@ -62,6 +62,7 @@ type AuditConfigModel struct {
 	deps    Deps
 	auditID string
 	loaded  bool
+	editing bool
 	name    textinput.Model
 	desc    textarea.Model
 	targets textarea.Model
@@ -86,7 +87,6 @@ func NewAuditConfigModel(deps Deps) AuditConfigModel {
 	ti := textinput.New()
 	ti.Placeholder = "e.g. Marketing Site Audit"
 	ti.CharLimit = 80
-	ti.Focus()
 
 	da := textarea.New()
 	da.Placeholder = "What is being audited and why?"
@@ -121,8 +121,16 @@ func NewAuditConfigModel(deps Deps) AuditConfigModel {
 	}
 }
 
+// NavigationEnabled allows tab and number-key navigation while the config is
+// being viewed; while editing, those keys belong to the form.
 func (m AuditConfigModel) NavigationEnabled() bool {
-	return false
+	return !m.editing
+}
+
+// Editing reports whether the configuration is in edit mode. The root uses
+// it to route Esc to the editor instead of leaving the view.
+func (m AuditConfigModel) Editing() bool {
+	return m.editing
 }
 
 // Track points the editor at the given audit and marks it stale so the next
@@ -130,6 +138,7 @@ func (m AuditConfigModel) NavigationEnabled() bool {
 func (m AuditConfigModel) Track(id string) AuditConfigModel {
 	if m.auditID != id {
 		m.loaded = false
+		m.editing = false
 		m.options = nil
 		m.cursor = 0
 	}
@@ -205,27 +214,53 @@ func (m AuditConfigModel) Update(msg tea.Msg) (AuditConfigModel, tea.Cmd) {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
+		if m.editing {
+			m.applyFocus()
+		} else {
+			m.blurAll()
+		}
 		return m, nil
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "left", "h":
-			if m.pane == configChecksPane {
+		// View mode: the configuration is read-only until editing is
+		// explicitly started.
+		if !m.editing {
+			if msg.String() == "e" || msg.String() == "enter" {
+				m.editing = true
 				m.pane = configFieldsPane
+				m.focus = 0
+				m.applyFocus()
 			}
 			return m, nil
-		case "right", "l":
-			if m.pane == configFieldsPane {
-				m.pane = configChecksPane
-			}
-			return m, nil
-		case "ctrl+s":
+		}
+
+		if msg.String() == "esc" {
+			// Leave edit mode without saving and reload the stored
+			// configuration so view mode never shows discarded edits.
+			m.editing = false
+			m.blurAll()
+			return m, m.loadCmd(m.auditID)
+		}
+
+		if msg.String() == "ctrl+s" {
 			return m.save()
 		}
 
-		// Check list keys only apply while the checks pane is focused.
+		// Check list keys only apply while the checks pane is focused. The
+		// fields pane gets no pane-switch keys here so the focused widget
+		// keeps receiving arrows and letters (h, l, ...) for editing.
 		if m.pane == configChecksPane {
 			switch msg.String() {
+			case "left", "h", "shift+tab", "backtab":
+				m.pane = configFieldsPane
+				m.focus = configFieldCount() - 1
+				m.applyFocus()
+				return m, nil
+			case "tab":
+				m.pane = configFieldsPane
+				m.focus = 0
+				m.applyFocus()
+				return m, nil
 			case "up", "k":
 				if m.cursor > 0 {
 					m.cursor--
@@ -248,10 +283,24 @@ func (m AuditConfigModel) Update(msg tea.Msg) (AuditConfigModel, tea.Cmd) {
 			return m, nil
 		}
 
-		// Field cycling only applies to the fields pane.
+		// Field cycling only applies to the fields pane. Tabbing past the
+		// last field moves the focus into the checks pane.
 		switch msg.String() {
-		case "tab", "shift+tab", "backtab":
-			m.focus = (m.focus + 1) % configFieldCount()
+		case "tab":
+			if m.focus >= configFieldCount()-1 {
+				m.pane = configChecksPane
+				m.blurAll()
+				return m, nil
+			}
+			m.focus++
+			m.applyFocus()
+			return m, nil
+		case "shift+tab", "backtab":
+			if m.focus > 0 {
+				m.focus--
+			} else {
+				m.focus = configFieldCount() - 1
+			}
 			m.applyFocus()
 			return m, nil
 		}
@@ -277,8 +326,20 @@ func (m AuditConfigModel) Update(msg tea.Msg) (AuditConfigModel, tea.Cmd) {
 	return m, cmd
 }
 
+// blurAll removes the focus from every field widget so only the focused
+// field renders a cursor.
+func (m *AuditConfigModel) blurAll() {
+	m.name.Blur()
+	m.desc.Blur()
+	m.targets.Blur()
+	for i := range m.cfgInputs {
+		m.cfgInputs[i].Blur()
+	}
+}
+
 // applyFocus focuses the widget of the current field, blurring the others.
 func (m *AuditConfigModel) applyFocus() {
+	m.blurAll()
 	switch m.focus {
 	case 0:
 		m.name.Focus()
@@ -437,6 +498,8 @@ func (m AuditConfigModel) save() (AuditConfigModel, tea.Cmd) {
 
 	id := m.auditID
 	description := m.desc.Value()
+	m.editing = false
+	m.blurAll()
 	return m, func() tea.Msg {
 		err := m.deps.AuditService.UpdateConfig(context.Background(), id, name, description, targets, chosen, configRaw)
 		return auditConfigSavedMsg{id: id, name: name, err: err}
@@ -486,6 +549,11 @@ func (m AuditConfigModel) fieldsView() string {
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Render("Audit Configuration"))
 	b.WriteString("\n\n")
 
+	if !m.editing {
+		b.WriteString(m.fieldsReadOnly())
+		return b.String()
+	}
+
 	label := func(text string, focused bool) string {
 		if focused {
 			return labelStyle.Render(text)
@@ -509,17 +577,54 @@ func (m AuditConfigModel) fieldsView() string {
 	return b.String()
 }
 
+// fieldsReadOnly renders the current configuration as plain, non-editable
+// text for the view mode.
+func (m AuditConfigModel) fieldsReadOnly() string {
+	value := func(v string) string {
+		v = strings.TrimRight(v, "\n")
+		if strings.TrimSpace(v) == "" {
+			return helpStyle.Render("(none)")
+		}
+		return v
+	}
+
+	var b strings.Builder
+	b.WriteString(helpStyle.Render("Name:"))
+	b.WriteString("\n")
+	b.WriteString(value(m.name.Value()))
+	b.WriteString("\n\n")
+
+	b.WriteString(helpStyle.Render("Description:"))
+	b.WriteString("\n")
+	b.WriteString(value(m.desc.Value()))
+	b.WriteString("\n\n")
+
+	b.WriteString(helpStyle.Render("Target URLs:"))
+	b.WriteString("\n")
+	b.WriteString(value(m.targets.Value()))
+	b.WriteString("\n\n")
+
+	b.WriteString(helpStyle.Render("Engine Configuration:"))
+	b.WriteString("\n")
+	for i, f := range cfgFields {
+		b.WriteString(fmt.Sprintf("%s: %s\n", f.title, m.cfgInputs[i].Value()))
+	}
+	return b.String()
+}
+
 // checksView renders the running checks of the right pane.
 func (m AuditConfigModel) checksView() string {
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Render("Running Checks"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("Space toggles the selected check."))
+	if m.editing {
+		b.WriteString(helpStyle.Render("Space toggles the selected check."))
+	}
 	b.WriteString("\n\n")
 
 	for i, opt := range m.options {
 		cursor := "  "
-		if m.pane == configChecksPane && i == m.cursor {
+		if m.editing && m.pane == configChecksPane && i == m.cursor {
 			cursor = labelStyle.Render("> ")
 		}
 		checked := "[ ]"
@@ -563,10 +668,13 @@ func (m AuditConfigModel) Help() string {
 	if m.auditID == "" {
 		return "Ctrl+O: Audits"
 	}
+	if !m.editing {
+		return "q: Quit  •  e: Edit  •  Ctrl+O: Audits"
+	}
 	switch m.pane {
 	case configChecksPane:
-		return "←: Fields  •  ↑/↓: Move  •  Space: Toggle  •  Enter/Ctrl+S: Save  •  Esc: Back  •  Ctrl+O: Audits"
+		return "←/Tab: Fields  •  ↑/↓: Move  •  Space: Toggle  •  Enter/Ctrl+S: Save  •  Esc: Cancel  •  Ctrl+O: Audits"
 	default:
-		return "→: Checks  •  Tab: Field  •  Ctrl+S: Save  •  Esc: Back  •  Ctrl+O: Audits"
+		return "Tab: Next Field/Checks  •  Ctrl+S: Save  •  Esc: Cancel  •  Ctrl+O: Audits"
 	}
 }
