@@ -37,6 +37,7 @@ func NewPerformanceTimingsCheck() *PerformanceTimingsCheck {
 func (c *PerformanceTimingsCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "performance_timings",
+		Label:       "Performance Timings",
 		Description: "Flags slow DNS, connection, TLS, server processing, and total request timings.",
 		Category:    domain.CategoryPerformance,
 	}
@@ -52,7 +53,7 @@ func (c *PerformanceTimingsCheck) Apply(ctx context.Context, doc *domain.Documen
 	if stats == nil {
 		return domain.NewFailIssue(
 			c,
-			domain.SeverityInfo,
+			domain.SeverityNotice,
 			"Skipped: Transfer stats were not collected. Enable httptrace to collect phase timings.",
 			nil,
 		)

@@ -4,12 +4,14 @@ import "time"
 
 // URLFilter narrows a stored audited URL query. States and
 // HighestSeverities are OR-sets within their dimension and the dimensions
-// combine with AND. The duration and score bounds are inclusive; a zero
-// minimum or maximum leaves that side unbounded. The zero-value filter
-// matches every URL.
+// combine with AND. URLContains is a case-insensitive substring match on the
+// stored URL. The duration and score bounds are inclusive; a zero minimum or
+// maximum leaves that side unbounded. The zero-value filter matches every
+// URL.
 type URLFilter struct {
 	States            []UrlState
 	HighestSeverities []Severity
+	URLContains       string
 	DurationMin       time.Duration
 	DurationMax       time.Duration
 	ScoreMin          float64

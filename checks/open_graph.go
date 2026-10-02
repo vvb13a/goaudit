@@ -108,6 +108,7 @@ func NewOpenGraphCheck() *OpenGraphCheck {
 func (c *OpenGraphCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "open_graph",
+		Label:       "Open Graph",
 		Description: "Validates Open Graph meta tags for presence, format, and required properties.",
 		Category:    domain.CategorySEO,
 	}

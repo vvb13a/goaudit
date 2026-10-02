@@ -50,6 +50,7 @@ func NewExternalLinksCheck(cache *service.LinkCache) *ExternalLinksCheck {
 func (c *ExternalLinksCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "external_links",
+		Label:       "External Links",
 		Description: "Checks that outbound links on the page are reachable.",
 		Category:    domain.CategoryGeneral,
 	}

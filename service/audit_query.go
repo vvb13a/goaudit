@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/vvb13a/goaudit/domain"
@@ -29,7 +30,97 @@ func applyIssueFilter(q *gorm.DB, filter domain.IssueFilter) *gorm.DB {
 	if len(filter.Categories) > 0 {
 		q = q.Where("category IN ?", stringValues(filter.Categories))
 	}
+	if filter.URLContains != "" {
+		q = q.Where(`url LIKE ? ESCAPE '\'`, likeContains(filter.URLContains))
+	}
+	if filter.MessageContains != "" {
+		q = q.Where(`message LIKE ? ESCAPE '\'`, likeContains(filter.MessageContains))
+	}
 	return q
+}
+
+// likeContains wraps a substring in a LIKE pattern, escaping the wildcard
+// characters so user input matches literally. Queries pair it with
+// ESCAPE '\'.
+func likeContains(value string) string {
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
+	return "%" + escaped + "%"
+}
+
+// IssueSort describes the ordering of an issue page. Field is a canonical
+// column keyword (see issueSortColumns); an unknown or empty field falls back
+// to the stored order (rowid), which is stable across pages.
+type IssueSort struct {
+	Field string
+	Desc  bool
+}
+
+// issueSortColumns maps the sort keywords the API exposes to SQL. Severity,
+// lifecycle and category order by their domain display order rather than
+// lexically, so "desc" reads most severe/first-state first.
+var issueSortColumns = map[string]string{
+	"severity":   `CASE severity WHEN 'fatal' THEN 0 WHEN 'error' THEN 1 WHEN 'warning' THEN 2 WHEN 'notice' THEN 3 WHEN 'info' THEN 4 WHEN 'success' THEN 5 ELSE 6 END`,
+	"lifecycle":  `CASE lifecycle WHEN 'new' THEN 0 WHEN 'open' THEN 1 WHEN 'resurfaced' THEN 2 WHEN 'degraded' THEN 3 WHEN 'improved' THEN 4 WHEN 'resolved' THEN 5 WHEN 'passed' THEN 6 ELSE 7 END`,
+	"category":   `CASE category WHEN 'seo' THEN 0 WHEN 'security' THEN 1 WHEN 'performance' THEN 2 WHEN 'accessibility' THEN 3 WHEN 'headers' THEN 4 WHEN 'content' THEN 5 WHEN 'general' THEN 6 ELSE 7 END`,
+	"check":      "check_name",
+	"check_name": "check_name",
+	"url":        "url",
+	"message":    "message",
+	"created_at": "created_at",
+	"updated_at": "updated_at",
+}
+
+// applyIssueSort orders an issue query by the given sort. Unknown fields keep
+// the stored order. rowid is appended as a tiebreaker so equal keys never
+// reorder between pages.
+func applyIssueSort(q *gorm.DB, sort IssueSort) *gorm.DB {
+	column, ok := issueSortColumns[sort.Field]
+	if !ok {
+		return q.Order("rowid")
+	}
+	dir := "ASC"
+	if sort.Desc {
+		dir = "DESC"
+	}
+	return q.Order(column + " " + dir).Order("rowid")
+}
+
+// URLSort describes the ordering of an audited URL page. Field is a
+// canonical column keyword (see urlSortColumns); an unknown or empty field
+// falls back to the stored order (rowid), which is stable across pages.
+type URLSort struct {
+	Field string
+	Desc  bool
+}
+
+// urlSortColumns maps the sort keywords the API exposes to SQL. State and
+// highest severity order by their domain display order rather than
+// lexically, so "desc" reads most severe/most recent-state first.
+var urlSortColumns = map[string]string{
+	"url":         "url",
+	"duration":    "duration_ms",
+	"duration_ms": "duration_ms",
+	"state":       `CASE state WHEN 'new' THEN 0 WHEN 'active' THEN 1 WHEN 'missing' THEN 2 ELSE 3 END`,
+	"highest":     `CASE highest_severity WHEN 'fatal' THEN 0 WHEN 'error' THEN 1 WHEN 'warning' THEN 2 WHEN 'notice' THEN 3 WHEN 'info' THEN 4 WHEN 'success' THEN 5 ELSE 6 END`,
+	"severity":    `CASE highest_severity WHEN 'fatal' THEN 0 WHEN 'error' THEN 1 WHEN 'warning' THEN 2 WHEN 'notice' THEN 3 WHEN 'info' THEN 4 WHEN 'success' THEN 5 ELSE 6 END`,
+	"score":       "score",
+	"status":      "status_code",
+	"status_code": "status_code",
+}
+
+// applyURLSort orders an audited URL query by the given sort. Unknown fields
+// keep the stored order. rowid is appended as a tiebreaker so equal keys
+// never reorder between pages.
+func applyURLSort(q *gorm.DB, sort URLSort) *gorm.DB {
+	column, ok := urlSortColumns[sort.Field]
+	if !ok {
+		return q.Order("rowid")
+	}
+	dir := "ASC"
+	if sort.Desc {
+		dir = "DESC"
+	}
+	return q.Order(column + " " + dir).Order("rowid")
 }
 
 // applyURLFilter pushes the dimensions of an audited URL filter into the
@@ -43,6 +134,9 @@ func applyURLFilter(q *gorm.DB, filter domain.URLFilter) *gorm.DB {
 	}
 	if len(filter.HighestSeverities) > 0 {
 		q = q.Where("highest_severity IN ?", stringValues(filter.HighestSeverities))
+	}
+	if trimmed := strings.TrimSpace(filter.URLContains); trimmed != "" {
+		q = q.Where("url LIKE ? ESCAPE '\\'", likeContains(trimmed))
 	}
 	if filter.DurationMin > 0 {
 		q = q.Where("duration_ms >= ?", filter.DurationMin.Milliseconds())
@@ -106,6 +200,15 @@ func (s *AuditService) IssueDistribution(ctx context.Context, auditID string, fi
 // against; its URL is the page's identity URL (the final URL, falling back
 // to the audited URL).
 func (s *AuditService) ListIssuesPage(ctx context.Context, auditID string, filter domain.IssueFilter, limit, offset int) ([]*domain.Issue, error) {
+	return s.ListIssuesPageSorted(ctx, auditID, filter, IssueSort{}, limit, offset)
+}
+
+// ListIssuesPageSorted returns one page of issues of the audit in the given
+// sort order, starting at the given offset and capped at limit rows, honoring
+// the given filter. Every row is one check result of the page it was checked
+// against; its URL is the page's identity URL (the final URL, falling back to
+// the audited URL).
+func (s *AuditService) ListIssuesPageSorted(ctx context.Context, auditID string, filter domain.IssueFilter, sort IssueSort, limit, offset int) ([]*domain.Issue, error) {
 	if limit <= 0 {
 		limit = 250
 	}
@@ -117,7 +220,7 @@ func (s *AuditService) ListIssuesPage(ctx context.Context, auditID string, filte
 		Where("audit_id = ?", auditID), filter)
 
 	var models []store.Issue
-	if err := q.Order("rowid").Limit(limit).Offset(offset).Find(&models).Error; err != nil {
+	if err := applyIssueSort(q, sort).Limit(limit).Offset(offset).Find(&models).Error; err != nil {
 		return nil, fmt.Errorf("page issues for audit: %w", err)
 	}
 
@@ -126,6 +229,59 @@ func (s *AuditService) ListIssuesPage(ctx context.Context, auditID string, filte
 		issues = append(issues, models[i].ToDomain())
 	}
 	return issues, nil
+}
+
+// issueBriefColumns are the columns a list row needs to render. The evidence
+// column (the per-issue findings, which can be large) is deliberately left
+// out so browsing a page never loads findings for issues the user has not
+// opened; GetIssue loads them for a single issue on demand.
+var issueBriefColumns = []string{
+	"id", "url", "check_name", "category", "severity", "message",
+	"prior_severity", "lifecycle", "created_at", "updated_at",
+}
+
+// ListIssuesPageBrief is ListIssuesPageSorted without the per-issue findings:
+// the returned issues carry no Details. It backs list views whose detail pane
+// loads a single issue separately.
+func (s *AuditService) ListIssuesPageBrief(ctx context.Context, auditID string, filter domain.IssueFilter, sort IssueSort, limit, offset int) ([]*domain.Issue, error) {
+	if limit <= 0 {
+		limit = 250
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	q := applyIssueFilter(s.db.WithContext(ctx).Model(&store.Issue{}).
+		Select(issueBriefColumns).
+		Where("audit_id = ?", auditID), filter)
+
+	var models []store.Issue
+	if err := applyIssueSort(q, sort).Limit(limit).Offset(offset).Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("page issues for audit: %w", err)
+	}
+
+	issues := make([]*domain.Issue, 0, len(models))
+	for i := range models {
+		issues = append(issues, models[i].ToDomain())
+	}
+	return issues, nil
+}
+
+// GetIssue returns one stored issue with its findings. The issue is addressed
+// by its audit id and issue id so a stale row of another audit cannot be
+// served.
+func (s *AuditService) GetIssue(ctx context.Context, auditID, issueID string) (*domain.Issue, error) {
+	var model store.Issue
+	err := s.db.WithContext(ctx).
+		Where("audit_id = ? AND id = ?", auditID, issueID).
+		First(&model).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, domain.ErrIssueNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get issue: %w", err)
+	}
+	return model.ToDomain(), nil
 }
 
 // CountIssues returns how many issues of the audit match the filter.
@@ -137,6 +293,146 @@ func (s *AuditService) CountIssues(ctx context.Context, auditID string, filter d
 		return 0, fmt.Errorf("count issues: %w", err)
 	}
 	return int(count), nil
+}
+
+// CheckFilter narrows a check summary query. NameContains matches the check
+// name case-insensitively; Categories and Highest are OR-sets; the count
+// minimums keep checks whose matching severity count is at least the given
+// value. A zero minimum places no constraint.
+type CheckFilter struct {
+	NameContains string
+	Categories   []domain.Category
+	Highest      []domain.Severity
+	FatalMin     int
+	ErrorMin     int
+	WarningMin   int
+	NoticeMin    int
+	SuccessMin   int
+}
+
+// CheckSort describes the ordering of a check summary list. An unknown or
+// empty field orders by name.
+type CheckSort struct {
+	Field string
+	Desc  bool
+}
+
+// CheckPage is one page of a check summary query together with the totals of
+// the whole filtered set: how many checks matched and how many of them had
+// each severity as their highest.
+type CheckPage struct {
+	Items         []*domain.CheckSummary
+	Total         int
+	HighestCounts domain.SeverityCounts
+}
+
+// ListCheckSummariesPage returns one page of the audit's check summaries
+// filtered and sorted as requested, plus the filtered-set totals.
+func (s *AuditService) ListCheckSummariesPage(ctx context.Context, auditID string, filter CheckFilter, sortSpec CheckSort, limit, offset int) (CheckPage, error) {
+	summaries, err := s.CheckSummaries(ctx, auditID)
+	if err != nil {
+		return CheckPage{}, err
+	}
+
+	filtered := applyCheckFilter(summaries, filter)
+	applyCheckSort(filtered, sortSpec)
+
+	total := len(filtered)
+	var highestCounts domain.SeverityCounts
+	for _, c := range filtered {
+		highestCounts.Add(c.Severity.Highest(), 1)
+	}
+
+	if limit <= 0 {
+		limit = 25
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return CheckPage{
+		Items:         filtered[offset:end],
+		Total:         total,
+		HighestCounts: highestCounts,
+	}, nil
+}
+
+func applyCheckFilter(summaries []*domain.CheckSummary, filter CheckFilter) []*domain.CheckSummary {
+	name := strings.ToLower(strings.TrimSpace(filter.NameContains))
+	cats := make(map[domain.Category]struct{}, len(filter.Categories))
+	for _, c := range filter.Categories {
+		cats[c] = struct{}{}
+	}
+	highest := make(map[domain.Severity]struct{}, len(filter.Highest))
+	for _, h := range filter.Highest {
+		highest[h] = struct{}{}
+	}
+
+	out := make([]*domain.CheckSummary, 0, len(summaries))
+	for _, c := range summaries {
+		if name != "" && !strings.Contains(strings.ToLower(c.Name), name) {
+			continue
+		}
+		if len(cats) > 0 {
+			if _, ok := cats[c.Category]; !ok {
+				continue
+			}
+		}
+		if len(highest) > 0 {
+			if _, ok := highest[c.Severity.Highest()]; !ok {
+				continue
+			}
+		}
+		if c.Severity.Fatal < filter.FatalMin ||
+			c.Severity.Error < filter.ErrorMin ||
+			c.Severity.Warning < filter.WarningMin ||
+			c.Severity.Notice < filter.NoticeMin ||
+			c.Severity.Success < filter.SuccessMin {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func applyCheckSort(summaries []*domain.CheckSummary, sortSpec CheckSort) {
+	sort.SliceStable(summaries, func(i, j int) bool {
+		a, b := summaries[i], summaries[j]
+		var c int
+		switch sortSpec.Field {
+		case "category":
+			c = categoryRank(a.Category) - categoryRank(b.Category)
+			if c == 0 {
+				c = strings.Compare(a.Name, b.Name)
+			}
+		case "total":
+			c = a.Total - b.Total
+		case "fatal":
+			c = a.Severity.Fatal - b.Severity.Fatal
+		case "error":
+			c = a.Severity.Error - b.Severity.Error
+		case "warning":
+			c = a.Severity.Warning - b.Severity.Warning
+		case "notice":
+			c = a.Severity.Notice - b.Severity.Notice
+		case "success":
+			c = a.Severity.Success - b.Severity.Success
+		case "highest":
+			c = a.Severity.Highest().Weight() - b.Severity.Highest().Weight()
+		default:
+			c = strings.Compare(a.Name, b.Name)
+		}
+		if sortSpec.Desc {
+			return c > 0
+		}
+		return c < 0
+	})
 }
 
 // CheckSummaries groups the stored issues of the audit by check and returns
@@ -318,6 +614,12 @@ func (s *AuditService) URLAggregates(ctx context.Context, auditID string, filter
 // No issues are attached; use URLIssues to load the issues of the selected
 // URL.
 func (s *AuditService) ListURLsPage(ctx context.Context, auditID string, filter domain.URLFilter, limit, offset int) ([]*domain.AuditedUrl, int, error) {
+	return s.ListURLsPageSorted(ctx, auditID, filter, URLSort{}, limit, offset)
+}
+
+// ListURLsPageSorted is ListURLsPage with an explicit ordering. Unknown sort
+// fields fall back to the stored order (rowid).
+func (s *AuditService) ListURLsPageSorted(ctx context.Context, auditID string, filter domain.URLFilter, sort URLSort, limit, offset int) ([]*domain.AuditedUrl, int, error) {
 	if limit <= 0 {
 		limit = 200
 	}
@@ -335,8 +637,7 @@ func (s *AuditService) ListURLsPage(ctx context.Context, auditID string, filter 
 	var models []store.AuditedUrl
 	pageQuery := applyURLFilter(s.db.WithContext(ctx).
 		Where("audit_id = ?", auditID), filter)
-	if err := pageQuery.
-		Order("rowid").
+	if err := applyURLSort(pageQuery, sort).
 		Limit(limit).Offset(offset).
 		Find(&models).Error; err != nil {
 		return nil, 0, fmt.Errorf("page audited urls: %w", err)

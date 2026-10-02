@@ -59,8 +59,6 @@ func (c *SeverityCounts) Add(severity Severity, n int) {
 	switch severity {
 	case SeveritySuccess:
 		c.Success += n
-	case SeverityInfo:
-		c.Info += n
 	case SeverityNotice:
 		c.Notice += n
 	case SeverityWarning:

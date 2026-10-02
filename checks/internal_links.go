@@ -50,6 +50,7 @@ func NewInternalLinksCheck(cache *service.LinkCache) *InternalLinksCheck {
 func (c *InternalLinksCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "internal_links",
+		Label:       "Internal Links",
 		Description: "Checks that in-page links to the same site resolve successfully.",
 		Category:    domain.CategoryGeneral,
 	}

@@ -751,32 +751,29 @@ func (m DashboardModel) urlStateMetrics() []widgetMetric {
 func (m DashboardModel) severityMetrics() []widgetMetric {
 	counts := m.metrics.Severity
 	fatal, errs, warns := counts.Fatal, counts.Error, counts.Warning
-	notices, infos, passes := counts.Notice, counts.Info, counts.Success
+	notices, passes := counts.Notice, counts.Success
 
-	var fatalDelta, errorDelta, warnDelta, noticeDelta, infoDelta, passDelta string
+	var fatalDelta, errorDelta, warnDelta, noticeDelta, passDelta string
 	if prev := m.previous; prev != nil {
 		p := prev.SeverityCounts
 		fatalDelta = intDelta(fatal, p.Fatal)
 		errorDelta = intDelta(errs, p.Error)
 		warnDelta = intDelta(warns, p.Warning)
 		noticeDelta = intDelta(notices, p.Notice)
-		infoDelta = intDelta(infos, p.Info)
 		passDelta = intDelta(passes, p.Success)
 	}
 	boxes := []metricBox{
 		{label: "FATAL", color: issueSeverityColor(domain.SeverityFatal)},
 		{label: "ERROR", color: issueSeverityColor(domain.SeverityError)},
-		{label: "WARN", color: issueSeverityColor(domain.SeverityWarning)},
+		{label: "WARNING", color: issueSeverityColor(domain.SeverityWarning)},
 		{label: "NOTICE", color: issueSeverityColor(domain.SeverityNotice)},
-		{label: "INFO", color: issueSeverityColor(domain.SeverityInfo)},
-		{label: "PASS", color: issueSeverityColor(domain.SeveritySuccess)},
+		{label: "SUCCESS", color: issueSeverityColor(domain.SeveritySuccess)},
 	}
 	return metricsOf(boxes,
 		withDelta(fmt.Sprintf("%d", fatal), fatalDelta),
 		withDelta(fmt.Sprintf("%d", errs), errorDelta),
 		withDelta(fmt.Sprintf("%d", warns), warnDelta),
 		withDelta(fmt.Sprintf("%d", notices), noticeDelta),
-		withDelta(fmt.Sprintf("%d", infos), infoDelta),
 		withDelta(fmt.Sprintf("%d", passes), passDelta),
 	)
 }
@@ -896,10 +893,9 @@ func (m DashboardModel) severityChart(width int) string {
 	}{
 		{"FATAL", domain.SeverityFatal},
 		{"ERROR", domain.SeverityError},
-		{"WARN", domain.SeverityWarning},
+		{"WARNING", domain.SeverityWarning},
 		{"NOTICE", domain.SeverityNotice},
-		{"INFO", domain.SeverityInfo},
-		{"PASS", domain.SeveritySuccess},
+		{"SUCCESS", domain.SeveritySuccess},
 	}
 
 	rows := make([]barChartRow, 0, len(defs))

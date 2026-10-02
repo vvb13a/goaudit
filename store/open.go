@@ -26,5 +26,12 @@ func Open(path string) (*gorm.DB, error) {
 		return nil, fmt.Errorf("auto-migrate schema: %w", err)
 	}
 
+	if err := migrateRemovedInfoSeverity(db); err != nil {
+		return nil, fmt.Errorf("migrate removed info severity: %w", err)
+	}
+	if err := migrateRemovedTransferStatsCheck(db); err != nil {
+		return nil, fmt.Errorf("migrate removed transfer_stats_log check: %w", err)
+	}
+
 	return db, nil
 }

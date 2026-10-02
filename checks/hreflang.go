@@ -31,6 +31,7 @@ func NewHreflangCheck() *HreflangCheck {
 func (c *HreflangCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "hreflang",
+		Label:       "Hreflang",
 		Description: "Validates hreflang alternate tags for language format, absolute URLs, and self-references.",
 		Category:    domain.CategorySEO,
 	}

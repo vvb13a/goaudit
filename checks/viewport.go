@@ -29,6 +29,7 @@ func NewViewportCheck() *ViewportCheck {
 func (c *ViewportCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "viewport",
+		Label:       "Viewport",
 		Description: "Checks for a correctly configured viewport meta tag for mobile devices.",
 		Category:    domain.CategorySEO,
 	}

@@ -116,8 +116,6 @@ func issueSeverityColor(severity domain.Severity) lipgloss.Color {
 		return lipgloss.Color("3")
 	case domain.SeverityNotice:
 		return lipgloss.Color("39")
-	case domain.SeverityInfo:
-		return lipgloss.Color("45")
 	default:
 		return lipgloss.Color("10")
 	}

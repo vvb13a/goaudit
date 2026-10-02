@@ -17,6 +17,19 @@ type Config struct {
 	UserAgent       string `json:"user_agent"`
 	MaxSitemapDepth int    `json:"max_sitemap_depth"`
 	LinkCacheTTLMin int    `json:"link_cache_ttl_min"`
+
+	// Workflow toggles. A run performs the enabled workflows; at least one
+	// must be on. Checks and the link graph are independent.
+	EnableChecks bool `json:"enable_checks"`
+	EnableGraph  bool `json:"enable_graph"`
+
+	// Notification delivery. The webhook is app-level; the trigger toggles
+	// decide whether a finished run is announced for direct (interface) runs
+	// and/or scheduled runs.
+	NotificationsEnabled bool   `json:"notifications_enabled"`
+	SlackWebhookURL      string `json:"slack_webhook_url"`
+	NotifyOnDirect       bool   `json:"notify_on_direct"`
+	NotifyOnSchedule     bool   `json:"notify_on_schedule"`
 }
 
 func DefaultConfig() *Config {
@@ -27,6 +40,14 @@ func DefaultConfig() *Config {
 		UserAgent:       "GoAuditEngine/1.0 (AuditBot; +https://example.com/bot)",
 		MaxSitemapDepth: 3,
 		LinkCacheTTLMin: 15,
+
+		EnableChecks: true,
+		EnableGraph:  false,
+
+		NotificationsEnabled: false,
+		SlackWebhookURL:      "",
+		NotifyOnDirect:       true,
+		NotifyOnSchedule:     true,
 	}
 }
 
@@ -66,6 +87,21 @@ func (m *Manager) Load() error {
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return err
+	}
+	// These trigger toggles are new: configs written before they existed lack
+	// the keys, and the zero value (false) would silently disable them.
+	// Default them to on when absent.
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err == nil {
+		if _, ok := keys["notify_on_direct"]; !ok {
+			cfg.NotifyOnDirect = true
+		}
+		if _, ok := keys["notify_on_schedule"]; !ok {
+			cfg.NotifyOnSchedule = true
+		}
+		if _, ok := keys["enable_checks"]; !ok {
+			cfg.EnableChecks = true
+		}
 	}
 	m.cfg = &cfg
 	return nil
@@ -139,6 +175,36 @@ func MergeConfig(base Config, raw json.RawMessage) Config {
 	}
 	if v, ok := obj["link_cache_ttl_min"]; ok {
 		out.LinkCacheTTLMin = mergeInt(base.LinkCacheTTLMin, v, true)
+	}
+	if v, ok := obj["enable_checks"]; ok {
+		if b, ok := v.(bool); ok {
+			out.EnableChecks = b
+		}
+	}
+	if v, ok := obj["enable_graph"]; ok {
+		if b, ok := v.(bool); ok {
+			out.EnableGraph = b
+		}
+	}
+	if v, ok := obj["notifications_enabled"]; ok {
+		if b, ok := v.(bool); ok {
+			out.NotificationsEnabled = b
+		}
+	}
+	if v, ok := obj["slack_webhook_url"]; ok {
+		if s, ok := v.(string); ok {
+			out.SlackWebhookURL = strings.TrimSpace(s)
+		}
+	}
+	if v, ok := obj["notify_on_direct"]; ok {
+		if b, ok := v.(bool); ok {
+			out.NotifyOnDirect = b
+		}
+	}
+	if v, ok := obj["notify_on_schedule"]; ok {
+		if b, ok := v.(bool); ok {
+			out.NotifyOnSchedule = b
+		}
 	}
 	return out
 }

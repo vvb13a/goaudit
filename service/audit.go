@@ -510,11 +510,13 @@ func (s *AuditService) CreateBlank(ctx context.Context, name, description string
 	if len(targets) == 0 {
 		return nil, fmt.Errorf("audit must contain at least one target URL")
 	}
-	if len(checkNames) == 0 {
+
+	effective := MergeConfig(*DefaultConfig(), config)
+	if effective.EnableChecks && len(checkNames) == 0 {
 		return nil, fmt.Errorf("audit must contain at least one check")
 	}
 
-	canonicalConfig, err := json.Marshal(MergeConfig(*DefaultConfig(), config))
+	canonicalConfig, err := json.Marshal(effective)
 	if err != nil {
 		return nil, fmt.Errorf("normalize audit config: %w", err)
 	}

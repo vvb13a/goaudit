@@ -29,6 +29,7 @@ func NewCanonicalURLCheck() *CanonicalURLCheck {
 func (c *CanonicalURLCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "canonical_url",
+		Label:       "Canonical URL",
 		Description: "Verifies the page declares exactly one valid canonical link tag.",
 		Category:    domain.CategorySEO,
 	}

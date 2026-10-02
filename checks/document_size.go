@@ -25,6 +25,7 @@ func NewDocumentSizeCheck() *DocumentSizeCheck {
 func (c *DocumentSizeCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "document_size",
+		Label:       "Document Size",
 		Description: "Flags pages whose uncompressed response body is overly large.",
 		Category:    domain.CategoryPerformance,
 	}

@@ -26,6 +26,7 @@ func NewStatusCodeCheck() *StatusCodeCheck {
 func (c *StatusCodeCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "status_code",
+		Label:       "Status Code",
 		Description: "Evaluates the HTTP response status code of the page.",
 		Category:    domain.CategoryGeneral,
 	}

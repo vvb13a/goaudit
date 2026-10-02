@@ -1,6 +1,13 @@
 package domain
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// ErrIssueNotFound is returned when an issue id does not belong to the audit
+// it is looked up in.
+var ErrIssueNotFound = errors.New("issue not found")
 
 // IssueLifecycle describes how an issue changed between the previous run
 // state (PriorSeverity) and its current state (Severity). Severities compare

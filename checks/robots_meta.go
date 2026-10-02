@@ -19,8 +19,8 @@ type RobotsMetaCheck struct {
 
 func NewRobotsMetaCheck() *RobotsMetaCheck {
 	return &RobotsMetaCheck{
-		NoindexSeverity:  domain.SeverityInfo,
-		NofollowSeverity: domain.SeverityInfo,
+		NoindexSeverity:  domain.SeverityNotice,
+		NofollowSeverity: domain.SeverityNotice,
 		MultipleSeverity: domain.SeverityError,
 	}
 }
@@ -28,6 +28,7 @@ func NewRobotsMetaCheck() *RobotsMetaCheck {
 func (c *RobotsMetaCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "robots_meta",
+		Label:       "Robots Meta",
 		Description: "Reports on robots meta directives and duplicate tag issues.",
 		Category:    domain.CategorySEO,
 	}

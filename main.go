@@ -3,10 +3,12 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/vvb13a/goaudit/api"
 	"github.com/vvb13a/goaudit/checks"
 	"github.com/vvb13a/goaudit/service"
 	"github.com/vvb13a/goaudit/store"
@@ -38,21 +40,48 @@ func main() {
 	registry := service.NewCheckRegistry(allChecks...)
 
 	runner := service.NewRunner()
+	notifier := service.NewNotifier()
 
 	// 4. Application Services (GORM persistence)
 	auditService := service.NewAuditService(db)
 
-	// 5. Launch TUI
+	// 5. Launch the selected interface: `goaudit serve` starts the web API
+	// for the Vue frontend, anything else launches the TUI.
+	if len(os.Args) > 1 && os.Args[1] == "serve" {
+		runServer(api.Deps{
+			AuditService:  auditService,
+			Registry:      registry,
+			ConfigManager: cfgManager,
+			Runner:        runner,
+			Notifier:      notifier,
+		})
+		return
+	}
+
 	app := tui.New(tui.Deps{
 		ConfigManager: cfgManager,
 		Registry:      registry,
 		Runner:        runner,
 		AuditService:  auditService,
+		Notifier:      notifier,
 	})
 
 	program := tea.NewProgram(app, tea.WithAltScreen())
 	if _, err := program.Run(); err != nil {
 		fmt.Printf("Error running TUI: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// runServer starts the JSON API that backs the web frontend. The listen
+// address defaults to :8080 and can be overridden with GOAUDIT_ADDR.
+func runServer(deps api.Deps) {
+	addr := ":8080"
+	if v := os.Getenv("GOAUDIT_ADDR"); v != "" {
+		addr = v
+	}
+	log.Printf("goaudit api listening on %s", addr)
+	if err := http.ListenAndServe(addr, api.NewServer(deps)); err != nil {
+		log.Fatalf("api server: %v", err)
 	}
 }

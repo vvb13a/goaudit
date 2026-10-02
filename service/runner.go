@@ -53,6 +53,14 @@ func (r *Runner) ExecuteAudit(
 		maxDepth = 3
 	}
 
+	// The workflow toggles decide what a run does. With checks disabled the
+	// resolved checks are ignored; a graph-only run still fetches its targets
+	// so the graph can be extracted later. Validation guarantees at least one
+	// workflow is enabled.
+	if !cfg.EnableChecks {
+		checks = nil
+	}
+
 	fetcher := fetcherFor(cfg)
 
 	resolvedURLs, err := r.resolveTargets(ctx, fetcher, maxDepth, targets)
@@ -95,6 +103,12 @@ func (r *Runner) ExecuteAudit(
 		semaphore = make(chan struct{}, concurrency)
 		delay     = cfg.RequestDelay()
 	)
+
+	// Link-graph extraction is gated by cfg.EnableGraph: each fetched document
+	// would yield its outbound links. It is not implemented yet, so the toggle
+	// is stored and respected as a no-op; no edges are collected.
+	if cfg.EnableGraph {
+	}
 
 	for i, targetURL := range resolvedURLs {
 		if ctx.Err() != nil {

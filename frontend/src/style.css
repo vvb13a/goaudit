@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+/*
+ * Square off Tailwind's rounded corners too; --radius-lg backs `rounded-lg`,
+ * which is the only non-circular radius utility the app uses. `rounded-full`
+ * (status dots, pills) keeps its shape.
+ */
+:root {
+  --radius-lg: 0;
+}
+
+/*
+ * Box the column header row. Only border widths are set here; the color and
+ * style come from the datatable theme tokens, so hover/sorted/filter states
+ * are left untouched. The paginator gets its all-around border from the
+ * datatable.paginatorBottom token.
+ */
+.p-datatable .p-datatable-thead > tr > th {
+  border-top-width: 1px;
+}
+.p-datatable .p-datatable-thead > tr > th:first-child {
+  border-inline-start-width: 1px;
+}
+.p-datatable .p-datatable-thead > tr > th:last-child {
+  border-inline-end-width: 1px;
+}

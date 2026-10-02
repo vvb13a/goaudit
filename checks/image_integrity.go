@@ -32,6 +32,7 @@ func NewImageIntegrityCheck() *ImageIntegrityCheck {
 func (c *ImageIntegrityCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "image_integrity",
+		Label:       "Image Integrity",
 		Description: "Checks that images have a src attribute and appropriate alt text.",
 		Category:    domain.CategoryAccessibility,
 	}

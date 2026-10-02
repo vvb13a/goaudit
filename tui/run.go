@@ -55,6 +55,11 @@ func newRunCmd(
 		if err != nil {
 			return runCompleteMsg{target: target, audit: audit, title: name, err: err}
 		}
+
+		// Best effort: a failed notification must not affect the run.
+		if deps.Notifier != nil {
+			_ = deps.Notifier.Notify(context.Background(), audit, cfg, service.NotifyDirect)
+		}
 		return runCompleteMsg{target: target, audit: audit, title: name}
 	}
 }

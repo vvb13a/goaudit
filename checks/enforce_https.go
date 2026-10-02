@@ -26,6 +26,7 @@ func NewEnforceHTTPSCheck() *EnforceHTTPSCheck {
 func (c *EnforceHTTPSCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "enforce_https",
+		Label:       "Enforce HTTPS",
 		Description: "Ensures the page and its navigational links are served over HTTPS.",
 		Category:    domain.CategorySecurity,
 	}

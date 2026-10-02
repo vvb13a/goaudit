@@ -37,6 +37,7 @@ func NewH1Check() *H1Check {
 func (c *H1Check) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "h1",
+		Label:       "H1 Heading",
 		Description: "Ensures the page has exactly one non-empty, reasonably sized <h1> heading.",
 		Category:    domain.CategorySEO,
 	}

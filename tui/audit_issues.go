@@ -927,10 +927,9 @@ func (m AuditIssuesModel) severityWidget() string {
 	boxes := []box{
 		{domain.SeverityFatal, "FATAL"},
 		{domain.SeverityError, "ERROR"},
-		{domain.SeverityWarning, "WARN"},
+		{domain.SeverityWarning, "WARNING"},
 		{domain.SeverityNotice, "NOTICE"},
-		{domain.SeverityInfo, "INFO"},
-		{domain.SeveritySuccess, "PASS"},
+		{domain.SeveritySuccess, "SUCCESS"},
 	}
 
 	metrics := make([]widgetMetric, 0, len(boxes))
@@ -945,8 +944,6 @@ func (m AuditIssuesModel) severityWidget() string {
 			count = m.counts.Warning
 		case domain.SeverityNotice:
 			count = m.counts.Notice
-		case domain.SeverityInfo:
-			count = m.counts.Info
 		case domain.SeveritySuccess:
 			count = m.counts.Success
 		}

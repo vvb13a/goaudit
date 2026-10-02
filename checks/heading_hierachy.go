@@ -24,6 +24,7 @@ func NewHeadingHierarchyCheck() *HeadingHierarchyCheck {
 func (c *HeadingHierarchyCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "heading_hierarchy",
+		Label:       "Heading Hierarchy",
 		Description: "Checks that heading levels progress without skipping levels and start with an <h1>.",
 		Category:    domain.CategorySEO,
 	}

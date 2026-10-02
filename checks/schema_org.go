@@ -27,6 +27,7 @@ func NewSchemaCheck() *SchemaCheck {
 func (c *SchemaCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "schema",
+		Label:       "Schema.org",
 		Description: "Checks for a Schema.org JSON-LD script with valid JSON content.",
 		Category:    domain.CategorySEO,
 	}

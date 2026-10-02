@@ -37,6 +37,7 @@ func NewMetaDescriptionCheck() *MetaDescriptionCheck {
 func (c *MetaDescriptionCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "meta_description",
+		Label:       "Meta Description",
 		Description: "Checks for a single meta description tag of appropriate length.",
 		Category:    domain.CategorySEO,
 	}

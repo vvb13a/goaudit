@@ -27,6 +27,7 @@ func NewDomSizeCheck() *DomSizeCheck {
 func (c *DomSizeCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "dom_size",
+		Label:       "DOM Size",
 		Description: "Flags pages with excessively large DOM node counts.",
 		Category:    domain.CategoryPerformance,
 	}

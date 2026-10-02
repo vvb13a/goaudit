@@ -24,6 +24,7 @@ func NewMixedContentCheck() *MixedContentCheck {
 func (c *MixedContentCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "mixed_content",
+		Label:       "Mixed Content",
 		Description: "Flags insecure (HTTP) subresources loaded on HTTPS pages.",
 		Category:    domain.CategorySecurity,
 	}

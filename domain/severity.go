@@ -9,7 +9,6 @@ type Severity string
 
 const (
 	SeveritySuccess Severity = "success"
-	SeverityInfo    Severity = "info"
 	SeverityNotice  Severity = "notice"
 	SeverityWarning Severity = "warning"
 	SeverityError   Severity = "error"
@@ -18,7 +17,6 @@ const (
 
 var AllSeverities = []Severity{
 	SeveritySuccess,
-	SeverityInfo,
 	SeverityNotice,
 	SeverityWarning,
 	SeverityError,
@@ -29,8 +27,6 @@ func (s Severity) Weight() int {
 	switch s {
 	case SeveritySuccess:
 		return 0
-	case SeverityInfo:
-		return 10
 	case SeverityNotice:
 		return 20
 	case SeverityWarning:
@@ -63,7 +59,7 @@ func (s Severity) String() string {
 func ParseSeverity(raw string) (Severity, error) {
 	normalized := Severity(strings.ToLower(strings.TrimSpace(raw)))
 	if !normalized.IsValid() {
-		return "", fmt.Errorf("invalid severity %q: must be one of [success, info, notice, warning, error, fatal]", raw)
+		return "", fmt.Errorf("invalid severity %q: must be one of [success, notice, warning, error, fatal]", raw)
 	}
 	return normalized, nil
 }

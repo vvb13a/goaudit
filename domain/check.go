@@ -4,6 +4,7 @@ import "context"
 
 type CheckInfo struct {
 	Name        string   `json:"name"`
+	Label       string   `json:"label"`
 	Description string   `json:"description"`
 	Category    Category `json:"category"`
 }

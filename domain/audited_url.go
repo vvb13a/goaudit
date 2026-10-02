@@ -36,7 +36,6 @@ func (s UrlState) String() string {
 // checks fall into the lower severities; failures start at warning.
 type SeverityCounts struct {
 	Success int `json:"success"`
-	Info    int `json:"info"`
 	Notice  int `json:"notice"`
 	Warning int `json:"warning"`
 	Error   int `json:"error"`
@@ -45,7 +44,7 @@ type SeverityCounts struct {
 
 // Total returns the number of issues of every severity.
 func (c SeverityCounts) Total() int {
-	return c.Success + c.Info + c.Notice + c.Warning + c.Error + c.Fatal
+	return c.Success + c.Notice + c.Warning + c.Error + c.Fatal
 }
 
 // Failed returns how many issues did not pass (severity warning and worse).
@@ -63,8 +62,6 @@ func (c SeverityCounts) Count(severity Severity) int {
 	switch severity {
 	case SeveritySuccess:
 		return c.Success
-	case SeverityInfo:
-		return c.Info
 	case SeverityNotice:
 		return c.Notice
 	case SeverityWarning:
@@ -82,8 +79,6 @@ func (c *SeverityCounts) add(severity Severity) {
 	switch severity {
 	case SeveritySuccess:
 		c.Success++
-	case SeverityInfo:
-		c.Info++
 	case SeverityNotice:
 		c.Notice++
 	case SeverityWarning:

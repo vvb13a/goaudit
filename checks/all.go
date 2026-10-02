@@ -23,7 +23,6 @@ func All(linkCache *service.LinkCache) []domain.Check {
 		NewViewportCheck(),
 		NewTitleCheck(),
 		NewRobotsMetaCheck(),
-		NewTransferStatsLogCheck(),
 		NewPerformanceTimingsCheck(),
 		NewSchemaCheck(),
 

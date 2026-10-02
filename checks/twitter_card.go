@@ -40,6 +40,7 @@ func NewTwitterCardCheck() *TwitterCardCheck {
 func (c *TwitterCardCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "twitter_card",
+		Label:       "Twitter Card",
 		Description: "Validates Twitter Card meta tags for required properties and values.",
 		Category:    domain.CategorySEO,
 	}

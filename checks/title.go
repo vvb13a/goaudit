@@ -37,6 +37,7 @@ func NewTitleCheck() *TitleCheck {
 func (c *TitleCheck) Info() domain.CheckInfo {
 	return domain.CheckInfo{
 		Name:        "title",
+		Label:       "Title",
 		Description: "Checks for a single, non-empty <title> tag of appropriate length.",
 		Category:    domain.CategorySEO,
 	}
