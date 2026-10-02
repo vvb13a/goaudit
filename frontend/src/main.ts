@@ -7,6 +7,7 @@ import Tooltip from 'primevue/tooltip'
 import { createApp } from 'vue'
 import './style.css'
 import App from './App.vue'
+import { initColorScheme } from './lib/colorScheme'
 import { router } from './router'
 
 // Violet primary so the active states do not compete with the green success
@@ -39,23 +40,24 @@ const VioletPreset = definePreset(Aura, {
     },
   },
   components: {
-    // Distinct table header and paginator footer, set through the theme so
-    // PrimeVue's hover, sorted and filter states stay consistent.
+    // Distinct table header and paginator footer. The values use CSS
+    // light-dark() so they follow the color scheme (a surface token would not
+    // flip: surface.50 is near-white in both schemes).
     datatable: {
       headerCell: {
-        background: '{surface.50}',
-        color: '{surface.600}',
-        borderColor: '{surface.200}',
+        background: 'light-dark(#f8fafc, #27272a)',
+        color: 'light-dark(#475569, #e4e4e7)',
+        borderColor: 'light-dark(#e2e8f0, #3f3f46)',
       },
       paginatorBottom: {
-        borderColor: '{surface.200}',
+        borderColor: 'light-dark(#e2e8f0, #3f3f46)',
         borderWidth: '1px',
       },
     },
     paginator: {
       root: {
-        background: '{surface.50}',
-        color: '{surface.600}',
+        background: 'light-dark(#f8fafc, #27272a)',
+        color: 'light-dark(#475569, #e4e4e7)',
       },
     },
   },
@@ -66,6 +68,11 @@ const app = createApp(App)
 app.use(PrimeVue, {
   theme: {
     preset: VioletPreset,
+    // Class-based dark mode so a manual toggle can drive it (the default
+    // "system" would only follow the OS).
+    options: {
+      darkModeSelector: '.p-dark',
+    },
   },
   license: 'eyJpZCI6IjgxODMxNzVhLWI0NjUtNDQzYi1hMjgwLWU2ZTQzZjQ2NTE3NiIsInByb2R1Y3QiOiJwcmltZXVpIiwidGllciI6ImNvbW11bml0eSIsInR5cGUiOiJkZXYiLCJpYXQiOjE3OTA4NzUyMjQsImV4cCI6MTgyMjQxMTIyNH0.1RtAOl9Ww3-aE0yEH5e5r9qh7GVP-t1-eEaCcSpPRZUYbgszfwmC4gR5Om7J7Qd362yctgPQEgfTcLNnd6QPCA'
 })
@@ -73,6 +80,9 @@ app.use(router)
 app.use(ToastService)
 app.use(ConfirmationService)
 app.directive('tooltip', Tooltip)
+
+// Apply the stored/system color scheme before mount so there is no flash.
+initColorScheme()
 
 // Wait for the initial route to resolve before mounting, otherwise the shell
 // mounts with empty params and redirects deep links to the dashboard.

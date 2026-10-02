@@ -75,6 +75,7 @@ export interface CheckInfo {
   label: string
   description: string
   category: string
+  scope: string
 }
 
 export interface EngineConfig {
@@ -86,6 +87,7 @@ export interface EngineConfig {
   link_cache_ttl_min: number
   enable_checks: boolean
   enable_graph: boolean
+  enable_link_validation: boolean
   notifications_enabled: boolean
   slack_webhook_url: string
   notify_on_direct: boolean
@@ -111,6 +113,7 @@ export type RunState = 'idle' | 'running' | 'done' | 'error'
 
 export interface RunStatus {
   state: RunState
+  phase?: string
   current_url?: string
   completed: number
   total: number
@@ -184,6 +187,106 @@ export interface ChecksResponse {
   items: CheckSummary[]
   total: number
   highest_counts: SeverityCounts
+}
+
+export interface GraphNode {
+  id: string
+  url: string
+  filetype: string
+  external: boolean
+  is_root: boolean
+  in_links: number
+  out_links: number
+  first_seen: string
+  last_seen: string
+  status_code: number
+  last_validated: string
+}
+
+export interface GraphEdgeRow {
+  id: string
+  type: string
+  count: number
+  source_node_id: string
+  source_url: string
+  source_filetype: string
+  target_node_id: string
+  target_url: string
+  target_filetype: string
+  target_external: boolean
+}
+
+export interface FiletypeCount {
+  filetype: string
+  count: number
+}
+
+export interface GraphSummary {
+  total_nodes: number
+  total_edges: number
+  external_nodes: number
+  root_nodes: number
+  filetypes: FiletypeCount[]
+}
+
+export interface GraphSnapshot {
+  id: string
+  audit_id: string
+  created_at: string
+  total_nodes: number
+  total_edges: number
+  internal_nodes: number
+  external_nodes: number
+  root_nodes: number
+  filetypes: FiletypeCount[]
+  duration_ns: number
+}
+
+export interface GraphAllResponse {
+  nodes: GraphNode[]
+  edges: GraphEdgeRow[]
+  truncated: boolean
+}
+
+export interface GraphNodesResponse {
+  items: GraphNode[]
+  total: number
+}
+
+export interface GraphEdgesResponse {
+  items: GraphEdgeRow[]
+  total: number
+}
+
+export interface GraphNodeQuery {
+  page: number
+  limit: number
+  sort?: string
+  order?: 'asc' | 'desc'
+  filetypes?: string[]
+  external?: boolean
+  root?: boolean
+  url?: string
+  firstSeenFrom?: string
+  firstSeenTo?: string
+  lastSeenFrom?: string
+  lastSeenTo?: string
+  statusMin?: number
+  statusMax?: number
+  lastValidatedFrom?: string
+  lastValidatedTo?: string
+}
+
+export interface GraphEdgeQuery {
+  page: number
+  limit: number
+  sort?: string
+  order?: 'asc' | 'desc'
+  types?: string[]
+  sourceId?: string
+  targetId?: string
+  source?: string
+  target?: string
 }
 
 export interface CheckQuery {

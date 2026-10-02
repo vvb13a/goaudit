@@ -18,7 +18,6 @@ import (
 func main() {
 	// 1. Config Manager
 	cfgManager := service.NewManager("./data/config.json")
-	cfg := cfgManager.Get()
 
 	// 2. Storage & Auto-migrations (GORM)
 	db, err := store.Open("./data/goaudit.db")
@@ -32,18 +31,19 @@ func main() {
 	defer sqlDB.Close()
 
 	// 3. Engine & Registry
-	// The app-level config acts as the fallback base for audit runs and sizes
-	// the shared link cache. Each audit may carry its own config (stored on
-	// the audit record), which the runner applies per run.
-	linkCache := service.NewLinkCache(cfg.LinkCacheTTL())
-	allChecks := checks.All(linkCache)
+	// The app-level config acts as the fallback base for audit runs. Each audit
+	// may carry its own config (stored on the audit record), which the runner
+	// applies per run.
+	allChecks := checks.All()
 	registry := service.NewCheckRegistry(allChecks...)
 
-	runner := service.NewRunner()
+	graphService := service.NewGraphService(db)
+	linkValidator := service.NewLinkValidator(db)
+	runner := service.NewRunner(graphService)
 	notifier := service.NewNotifier()
 
 	// 4. Application Services (GORM persistence)
-	auditService := service.NewAuditService(db)
+	auditService := service.NewAuditService(db, graphService, linkValidator)
 
 	// 5. Launch the selected interface: `goaudit serve` starts the web API
 	// for the Vue frontend, anything else launches the TUI.

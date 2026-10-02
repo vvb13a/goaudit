@@ -34,6 +34,7 @@ const (
 // runStatus is the polled state of an audit's most recent background run.
 type runStatus struct {
 	State      runState  `json:"state"`
+	Phase      string    `json:"phase,omitempty"`
 	CurrentURL string    `json:"current_url,omitempty"`
 	Completed  int       `json:"completed"`
 	Total      int       `json:"total"`
@@ -70,7 +71,7 @@ func (rm *runManager) start(id string) (runStatus, bool) {
 	if s, ok := rm.runs[id]; ok && s.State == runRunning {
 		return *s, false
 	}
-	s := &runStatus{State: runRunning, StartedAt: time.Now().UTC()}
+	s := &runStatus{State: runRunning, Phase: "Starting", StartedAt: time.Now().UTC()}
 	rm.runs[id] = s
 	return *s, true
 }
@@ -86,6 +87,7 @@ func (rm *runManager) update(id string, fn func(*runStatus)) {
 func (rm *runManager) finish(id string) {
 	rm.update(id, func(s *runStatus) {
 		s.State = runDone
+		s.Phase = ""
 		s.CurrentURL = ""
 		s.FinishedAt = time.Now().UTC()
 	})
@@ -181,6 +183,7 @@ func (s *Server) executeRun(id string, audit *domain.Audit, req runRequest) {
 		cfg,
 		func(url string, completed, total int) {
 			s.runs.update(id, func(st *runStatus) {
+				st.Phase = "Gathering & checking"
 				st.CurrentURL = url
 				st.Completed = completed
 				st.Total = total
@@ -196,10 +199,37 @@ func (s *Server) executeRun(id string, audit *domain.Audit, req runRequest) {
 	// A run (including one-time overrides) must not rewrite the audit's stored
 	// configuration; only the run data is replaced.
 	result.Config = audit.Config
+
+	// Graph phase: validate link targets and run the graph checks before the
+	// single persist, so their issues land in the same transaction and feed the
+	// score and snapshots.
+	if err := s.deps.AuditService.PrepareGraph(ctx, result, checks, cfg, func(done, total int) {
+		s.runs.update(id, func(st *runStatus) {
+			st.Phase = "Validating links"
+			st.CurrentURL = ""
+			st.Completed = done
+			st.Total = total
+		})
+	}); err != nil && ctx.Err() == nil {
+		s.runs.fail(id, err)
+		return
+	}
+
+	persistPhase := "Persisting results"
+	if cfg.EnableGraph {
+		persistPhase = "Persisting graph"
+	}
+	s.runs.update(id, func(st *runStatus) {
+		st.Phase = persistPhase
+		st.CurrentURL = ""
+		st.Completed = 0
+		st.Total = 0
+	})
 	if err := s.deps.AuditService.ReplaceRun(ctx, result); err != nil {
 		s.runs.fail(id, err)
 		return
 	}
+
 	s.runs.finish(id)
 
 	// Best effort: a failed notification must not affect the run.

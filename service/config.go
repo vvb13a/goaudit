@@ -16,12 +16,22 @@ type Config struct {
 	HTTPTimeoutSec  int    `json:"http_timeout_sec"`
 	UserAgent       string `json:"user_agent"`
 	MaxSitemapDepth int    `json:"max_sitemap_depth"`
-	LinkCacheTTLMin int    `json:"link_cache_ttl_min"`
+
+	// LinkCacheTTLMin is the lifetime of a stored link validation result: a
+	// target is only re-fetched once its stored result is older than this.
+	// Defaults to a day so validation does not spam the internet.
+	LinkCacheTTLMin int `json:"link_cache_ttl_min"`
 
 	// Workflow toggles. A run performs the enabled workflows; at least one
 	// must be on. Checks and the link graph are independent.
 	EnableChecks bool `json:"enable_checks"`
 	EnableGraph  bool `json:"enable_graph"`
+
+	// EnableLinkValidation turns on the bulk validation of the graph's target
+	// nodes (assets, external and internal link targets) after a run. It is
+	// only useful with the graph workflow and is off by default to avoid
+	// unnecessary outbound requests.
+	EnableLinkValidation bool `json:"enable_link_validation"`
 
 	// Notification delivery. The webhook is app-level; the trigger toggles
 	// decide whether a finished run is announced for direct (interface) runs
@@ -39,10 +49,11 @@ func DefaultConfig() *Config {
 		HTTPTimeoutSec:  15,
 		UserAgent:       "GoAuditEngine/1.0 (AuditBot; +https://example.com/bot)",
 		MaxSitemapDepth: 3,
-		LinkCacheTTLMin: 15,
+		LinkCacheTTLMin: 1440,
 
-		EnableChecks: true,
-		EnableGraph:  false,
+		EnableChecks:         true,
+		EnableGraph:          false,
+		EnableLinkValidation: false,
 
 		NotificationsEnabled: false,
 		SlackWebhookURL:      "",
@@ -184,6 +195,11 @@ func MergeConfig(base Config, raw json.RawMessage) Config {
 	if v, ok := obj["enable_graph"]; ok {
 		if b, ok := v.(bool); ok {
 			out.EnableGraph = b
+		}
+	}
+	if v, ok := obj["enable_link_validation"]; ok {
+		if b, ok := v.(bool); ok {
+			out.EnableLinkValidation = b
 		}
 	}
 	if v, ok := obj["notifications_enabled"]; ok {

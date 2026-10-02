@@ -48,6 +48,15 @@ func newRunCmd(
 
 		if replaceID != "" {
 			audit.ID = replaceID
+		}
+
+		// Graph phase: validate link targets and run the graph checks before
+		// the single persist.
+		if err := deps.AuditService.PrepareGraph(context.Background(), audit, checks, cfg, nil); err != nil {
+			return runCompleteMsg{target: target, audit: audit, title: name, err: err}
+		}
+
+		if replaceID != "" {
 			err = deps.AuditService.ReplaceRun(context.Background(), audit)
 		} else {
 			err = deps.AuditService.Create(context.Background(), audit)

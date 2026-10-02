@@ -2,10 +2,9 @@ package checks
 
 import (
 	"github.com/vvb13a/goaudit/domain"
-	"github.com/vvb13a/goaudit/service"
 )
 
-func All(linkCache *service.LinkCache) []domain.Check {
+func All() []domain.Check {
 	return []domain.Check{
 		NewStatusCodeCheck(),
 		NewCanonicalURLCheck(),
@@ -26,8 +25,10 @@ func All(linkCache *service.LinkCache) []domain.Check {
 		NewPerformanceTimingsCheck(),
 		NewSchemaCheck(),
 
-		// Injected Link Cache checks:
-		NewInternalLinksCheck(linkCache),
-		NewExternalLinksCheck(linkCache),
+		// Graph checks: evaluated once, after link validation.
+		NewExternalLinksCheck(),
+		NewDocumentLinksCheck(),
+		NewAssetLinksCheck(),
+		NewMediaLinksCheck(),
 	}
 }

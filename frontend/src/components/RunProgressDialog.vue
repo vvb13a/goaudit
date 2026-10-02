@@ -25,6 +25,12 @@ const percent = computed(() => {
 const shortCurrent = computed(() =>
   (props.status?.current_url ?? '').replace(/^https?:\/\//, ''),
 )
+
+// The counter counts URLs during the crawl/check phase and link targets during
+// validation.
+const unit = computed(() =>
+  props.status?.phase === 'Validating links' ? 'targets' : 'URLs',
+)
 </script>
 
 <template>
@@ -42,10 +48,16 @@ const shortCurrent = computed(() =>
         {{ name || 'Audit' }}
       </div>
 
+      <div v-if="running && status?.phase" class="text-xs font-medium text-slate-500">
+        {{ status.phase }}…
+      </div>
+
       <ProgressBar :value="percent" :show-value="false" />
 
       <div class="flex items-center justify-between text-xs text-slate-400">
-        <span>{{ status?.completed ?? 0 }} / {{ status?.total ?? 0 }} URLs</span>
+        <span>
+          {{ status?.completed ?? 0 }} / {{ status?.total ?? 0 }} {{ unit }}
+        </span>
         <span>{{ percent }}%</span>
       </div>
 

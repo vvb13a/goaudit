@@ -23,6 +23,7 @@ const maxConcurrency = ref(5)
 const requestDelayMs = ref(100)
 const enableChecks = ref(true)
 const enableGraph = ref(false)
+const enableLinkValidation = ref(false)
 const notify = ref(true)
 const saveChanges = ref(true)
 
@@ -41,7 +42,8 @@ const changed = computed(
     (maxConcurrency.value !== original.value.config.max_concurrency ||
       requestDelayMs.value !== original.value.config.request_delay_ms ||
       enableChecks.value !== original.value.config.enable_checks ||
-      enableGraph.value !== original.value.config.enable_graph),
+      enableGraph.value !== original.value.config.enable_graph ||
+      enableLinkValidation.value !== original.value.config.enable_link_validation),
 )
 
 function toMessage(e: unknown): string {
@@ -60,6 +62,7 @@ async function load(): Promise<void> {
     requestDelayMs.value = config.config.request_delay_ms
     enableChecks.value = config.config.enable_checks
     enableGraph.value = config.config.enable_graph
+    enableLinkValidation.value = config.config.enable_link_validation
     notify.value = config.config.notify_on_direct
     saveChanges.value = true
   } catch (e) {
@@ -93,6 +96,7 @@ async function confirm(): Promise<void> {
     request_delay_ms: requestDelayMs.value,
     enable_checks: enableChecks.value,
     enable_graph: enableGraph.value,
+    enable_link_validation: enableLinkValidation.value,
   }
 
   saving.value = true
@@ -177,6 +181,11 @@ watch(visible, (open) => {
       <label class="flex items-center justify-between gap-4">
         <span class="text-sm text-slate-600">Build link graph</span>
         <ToggleSwitch v-model="enableGraph" />
+      </label>
+
+      <label class="flex items-center justify-between gap-4">
+        <span class="text-sm text-slate-600">Validate link targets</span>
+        <ToggleSwitch v-model="enableLinkValidation" :disabled="!enableGraph" />
       </label>
 
       <label

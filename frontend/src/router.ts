@@ -40,6 +40,41 @@ const routes: RouteRecordRaw[] = [
     props: true,
   },
   {
+    path: '/audits/:auditId/graph',
+    name: 'graph',
+    redirect: (to) => ({ name: 'graph-navigator', params: to.params }),
+  },
+  {
+    path: '/audits/:auditId/graph/navigator',
+    name: 'graph-navigator',
+    component: () => import('./components/GraphNavigatorRedirect.vue'),
+    props: true,
+  },
+  {
+    path: '/audits/:auditId/graph/navigator/:nodeId',
+    name: 'graph-navigator-node',
+    component: () => import('./components/GraphNavigatorView.vue'),
+    props: true,
+  },
+  {
+    path: '/audits/:auditId/graph/map',
+    name: 'graph-map',
+    component: () => import('./components/GraphMapView.vue'),
+    props: true,
+  },
+  {
+    path: '/audits/:auditId/graph/nodes',
+    name: 'graph-nodes',
+    component: () => import('./components/GraphNodesView.vue'),
+    props: true,
+  },
+  {
+    path: '/audits/:auditId/graph/edges',
+    name: 'graph-edges',
+    component: () => import('./components/GraphEdgesView.vue'),
+    props: true,
+  },
+  {
     path: '/audits/:auditId/timeline',
     name: 'timeline',
     component: () => import('./components/TimelineView.vue'),

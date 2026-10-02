@@ -161,6 +161,12 @@ type AuditedUrl struct {
 	LastAudited time.Time     `json:"last_audited_at"`
 	Summary     UrlSummary    `json:"summary"`
 	Issues      []Issue       `json:"issues"`
+
+	// Links are the outbound references extracted from the page during a run
+	// when the graph workflow is enabled. They are transient: the runner
+	// attaches them and the persistence layer turns them into graph nodes and
+	// edges; they are not stored on the audited URL row.
+	Links []RawLink `json:"links,omitempty"`
 }
 
 // CalculateSummary derives the URL summary from its issues. It is computed

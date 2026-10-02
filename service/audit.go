@@ -15,11 +15,67 @@ import (
 )
 
 type AuditService struct {
-	db *gorm.DB
+	db    *gorm.DB
+	graph *GraphService
+	links *LinkValidator
 }
 
-func NewAuditService(db *gorm.DB) *AuditService {
-	return &AuditService{db: db}
+func NewAuditService(db *gorm.DB, graph *GraphService, links *LinkValidator) *AuditService {
+	return &AuditService{db: db, graph: graph, links: links}
+}
+
+// PrepareGraph runs a run's graph phase before it is persisted: it validates
+// the run's link targets in bulk (when the graph and validation are enabled)
+// and runs the selected graph checks, appending their issues to the audited
+// pages. It is a no-op when the run selected no graph checks.
+func (s *AuditService) PrepareGraph(ctx context.Context, a *domain.Audit, checks []domain.Check, cfg Config, onProgress func(completed, total int)) error {
+	graphChecks := make([]domain.GraphCheck, 0, len(checks))
+	for _, c := range checks {
+		if gc, ok := c.(domain.GraphCheck); ok {
+			graphChecks = append(graphChecks, gc)
+		}
+	}
+	if len(graphChecks) == 0 {
+		return nil
+	}
+
+	var statuses map[string]store.LinkTarget
+	if cfg.EnableGraph {
+		targets := s.graph.TargetURLs(a)
+		if cfg.EnableLinkValidation {
+			var err error
+			statuses, err = s.links.Validate(ctx, cfg, targets, onProgress)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	view := s.graph.BuildView(a, statuses)
+	for _, gc := range graphChecks {
+		for _, pageIssue := range gc.Evaluate(ctx, view) {
+			attachPageIssue(a, pageIssue)
+		}
+	}
+	return nil
+}
+
+// attachPageIssue appends a graph-check issue to the audited URL it belongs to,
+// falling back to the first page when the issue has no matching source (e.g. a
+// "no validation performed" notice).
+func attachPageIssue(a *domain.Audit, pageIssue domain.PageIssue) {
+	for _, u := range a.Urls {
+		if u == nil {
+			continue
+		}
+		if normalizeGraphURL(issueURL(u)) == pageIssue.URL {
+			u.Issues = append(u.Issues, pageIssue.Issue)
+			return
+		}
+	}
+	if len(a.Urls) > 0 && a.Urls[0] != nil {
+		a.Urls[0].Issues = append(a.Urls[0].Issues, pageIssue.Issue)
+	}
 }
 
 // createBatchRows bounds how many rows one INSERT statement carries. SQLite
@@ -52,52 +108,68 @@ func createInBatches(tx *gorm.DB, rows any) error {
 // audit summary is derived from them.
 func (s *AuditService) Create(ctx context.Context, a *domain.Audit) error {
 	now := time.Now().UTC()
-	urlModels := make([]*store.AuditedUrl, 0, len(a.Urls))
-	issueModels := make([]*store.Issue, 0)
-	seen := make(map[string]struct{})
-
-	for i := range a.Urls {
-		u := a.Urls[i]
-		u.CalculateSummary()
-		u.State = domain.UrlStateNew
-		u.CreatedAt = now
-		u.LastAudited = now
-		urlModels = append(urlModels, store.AuditedUrlModel(a.ID, u))
-		for j := range u.Issues {
-			issue := &u.Issues[j]
-			url := issueURL(u)
-			id := store.IssueID(a.ID, url, issue.CheckName)
-			if _, dup := seen[id]; dup {
-				// Same page reached through two targets: the issue row is
-				// stored once and re-attached to every matching URL.
-				continue
-			}
-			seen[id] = struct{}{}
-			// First observation of the combination: no prior state, "new".
-			issue.PriorSeverity = ""
-			issue.Lifecycle = domain.LifecycleNew
-			issueModels = append(issueModels, store.IssueModel(a.ID, url, issue, now))
-		}
-	}
-
-	a.CalculateScore()
 
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(store.AuditModel(a)).Error; err != nil {
-			return fmt.Errorf("insert audit: %w", err)
+		if len(a.CheckNames) > 0 {
+			urlModels := make([]*store.AuditedUrl, 0, len(a.Urls))
+			issueModels := make([]*store.Issue, 0)
+			seen := make(map[string]struct{})
+
+			for i := range a.Urls {
+				u := a.Urls[i]
+				u.CalculateSummary()
+				u.State = domain.UrlStateNew
+				u.CreatedAt = now
+				u.LastAudited = now
+				urlModels = append(urlModels, store.AuditedUrlModel(a.ID, u))
+				for j := range u.Issues {
+					issue := &u.Issues[j]
+					url := issueURL(u)
+					id := store.IssueID(a.ID, url, issue.CheckName)
+					if _, dup := seen[id]; dup {
+						// Same page reached through two targets: the issue row
+						// is stored once and re-attached to every matching URL.
+						continue
+					}
+					seen[id] = struct{}{}
+					// First observation: no prior state, "new".
+					issue.PriorSeverity = ""
+					issue.Lifecycle = domain.LifecycleNew
+					issueModels = append(issueModels, store.IssueModel(a.ID, url, issue, now))
+				}
+			}
+
+			a.CalculateScore()
+
+			if err := tx.Create(store.AuditModel(a)).Error; err != nil {
+				return fmt.Errorf("insert audit: %w", err)
+			}
+			if err := createInBatches(tx, urlModels); err != nil {
+				return fmt.Errorf("insert audited urls: %w", err)
+			}
+			if err := createInBatches(tx, issueModels); err != nil {
+				return fmt.Errorf("insert issues: %w", err)
+			}
+		} else {
+			// A graph-only run stores no check data: the audit row is created
+			// without URLs, issues or a check score.
+			a.Score = 0
+			if err := tx.Create(store.AuditModel(a)).Error; err != nil {
+				return fmt.Errorf("insert audit: %w", err)
+			}
 		}
-		if err := createInBatches(tx, urlModels); err != nil {
-			return fmt.Errorf("insert audited urls: %w", err)
-		}
-		if err := createInBatches(tx, issueModels); err != nil {
-			return fmt.Errorf("insert issues: %w", err)
+
+		if a.GraphEnabled {
+			if err := s.graph.Persist(ctx, tx, a.ID, a); err != nil {
+				return fmt.Errorf("persist graph: %w", err)
+			}
 		}
 		return nil
 	}); err != nil {
 		return err
 	}
 
-	return s.captureSnapshot(ctx, a.ID)
+	return s.captureSnapshots(ctx, a)
 }
 
 // ReplaceRun persists a rerun of an existing audit without creating a new
@@ -114,98 +186,30 @@ func (s *AuditService) ReplaceRun(ctx context.Context, a *domain.Audit) error {
 	now := time.Now().UTC()
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Capture the previous state of the audit before replacing the rows.
-		var previous []store.Issue
-		if err := tx.Where("audit_id = ?", a.ID).Find(&previous).Error; err != nil {
-			return fmt.Errorf("load previous issues: %w", err)
-		}
-		oldByID := make(map[string]store.Issue, len(previous))
-		for _, row := range previous {
-			oldByID[row.ID] = row
-		}
-
-		var previousURLs []store.AuditedUrl
-		if err := tx.Where("audit_id = ?", a.ID).Find(&previousURLs).Error; err != nil {
-			return fmt.Errorf("load previous urls: %w", err)
-		}
-		oldByURL := make(map[string]store.AuditedUrl, len(previousURLs))
-		for _, row := range previousURLs {
-			oldByURL[row.URL] = row
-		}
-
-		if err := tx.Where("audit_id = ?", a.ID).Delete(&store.Issue{}).Error; err != nil {
-			return fmt.Errorf("replace issues: %w", err)
-		}
-
-		present := make(map[string]struct{}, len(a.Urls))
-		inserts := make([]*store.AuditedUrl, 0, len(a.Urls))
-		updates := make([]*store.AuditedUrl, 0, len(a.Urls))
-		issueModels := make([]*store.Issue, 0)
-		seen := make(map[string]struct{})
-
-		for i := range a.Urls {
-			u := a.Urls[i]
-			u.CalculateSummary()
-			present[u.URL] = struct{}{}
-
-			if old, ok := oldByURL[u.URL]; ok {
-				u.State = domain.UrlStateActive
-				u.CreatedAt = old.CreatedAt
-				u.LastAudited = now
-				updates = append(updates, store.AuditedUrlModel(a.ID, u))
-			} else {
-				u.State = domain.UrlStateNew
-				u.CreatedAt = now
-				u.LastAudited = now
-				inserts = append(inserts, store.AuditedUrlModel(a.ID, u))
+		if len(a.CheckNames) > 0 {
+			if err := s.replaceCheckData(tx, a, now); err != nil {
+				return err
 			}
-
-			for j := range u.Issues {
-				issue := &u.Issues[j]
-				url := issueURL(u)
-				id := store.IssueID(a.ID, url, issue.CheckName)
-				if _, dup := seen[id]; dup {
-					continue
-				}
-				seen[id] = struct{}{}
-				if oldRow, ok := oldByID[id]; ok {
-					applyIssueTransition(&oldRow, issue, now)
-				} else {
-					issue.PriorSeverity = ""
-					issue.Lifecycle = domain.LifecycleNew
-				}
-				issueModels = append(issueModels, store.IssueModel(a.ID, url, issue, now))
+		} else {
+			// A graph-only run must not touch the check data. Only the run
+			// metadata (when it last ran and how long it took) moves; the
+			// score, checks and URLs/issues stay as the last check run left
+			// them.
+			if err := tx.Model(&store.Audit{}).Where("id = ?", a.ID).
+				Updates(map[string]any{
+					"started_at":  a.StartedAt,
+					"duration_ms": a.Duration.Milliseconds(),
+				}).Error; err != nil {
+				return fmt.Errorf("update audit run metadata: %w", err)
 			}
 		}
 
-		a.CalculateScore()
-
-		if err := tx.Save(store.AuditModel(a)).Error; err != nil {
-			return fmt.Errorf("update audit: %w", err)
-		}
-
-		for _, model := range updates {
-			if err := tx.Save(model).Error; err != nil {
-				return fmt.Errorf("update audited urls: %w", err)
+		if a.GraphEnabled {
+			// The graph is reconciled each run: edges are replaced, nodes are
+			// upserted so first_seen survives while last_seen advances.
+			if err := s.graph.Persist(ctx, tx, a.ID, a); err != nil {
+				return fmt.Errorf("persist graph: %w", err)
 			}
-		}
-		if err := createInBatches(tx, inserts); err != nil {
-			return fmt.Errorf("insert audited urls: %w", err)
-		}
-		// URLs audited by an earlier run that did not reappear stay stored
-		// and are flipped to missing. Their issues were removed above; their
-		// summary and timestamps keep describing the last run they were in.
-		for url, old := range oldByURL {
-			if _, ok := present[url]; ok {
-				continue
-			}
-			old.State = string(domain.UrlStateMissing)
-			if err := tx.Save(&old).Error; err != nil {
-				return fmt.Errorf("mark missing urls: %w", err)
-			}
-		}
-		if err := createInBatches(tx, issueModels); err != nil {
-			return fmt.Errorf("insert issues: %w", err)
 		}
 		return nil
 	})
@@ -213,14 +217,134 @@ func (s *AuditService) ReplaceRun(ctx context.Context, a *domain.Audit) error {
 		return err
 	}
 
-	return s.captureSnapshot(ctx, a.ID)
+	return s.captureSnapshots(ctx, a)
 }
 
-// captureSnapshot stores the dashboard state of the audit as a new snapshot
-// row after a run. The snapshot is read back through GetByID so it matches
-// exactly what the dashboard shows, including URL rows kept as missing from
-// earlier runs.
-func (s *AuditService) captureSnapshot(ctx context.Context, auditID string) error {
+// replaceCheckData replaces an audit's check data with the results of a run
+// that performed checks: the audited URL rows are upserted (or flipped to
+// missing) and the issue rows are rebuilt with their lifecycle transitions,
+// then the check score is recomputed. It is only called when checks actually
+// ran, so a graph-only run leaves the check data untouched.
+func (s *AuditService) replaceCheckData(tx *gorm.DB, a *domain.Audit, now time.Time) error {
+	// Capture the previous state of the audit before replacing the rows.
+	var previous []store.Issue
+	if err := tx.Where("audit_id = ?", a.ID).Find(&previous).Error; err != nil {
+		return fmt.Errorf("load previous issues: %w", err)
+	}
+	oldByID := make(map[string]store.Issue, len(previous))
+	for _, row := range previous {
+		oldByID[row.ID] = row
+	}
+
+	var previousURLs []store.AuditedUrl
+	if err := tx.Where("audit_id = ?", a.ID).Find(&previousURLs).Error; err != nil {
+		return fmt.Errorf("load previous urls: %w", err)
+	}
+	oldByURL := make(map[string]store.AuditedUrl, len(previousURLs))
+	for _, row := range previousURLs {
+		oldByURL[row.URL] = row
+	}
+
+	if err := tx.Where("audit_id = ?", a.ID).Delete(&store.Issue{}).Error; err != nil {
+		return fmt.Errorf("replace issues: %w", err)
+	}
+
+	present := make(map[string]struct{}, len(a.Urls))
+	inserts := make([]*store.AuditedUrl, 0, len(a.Urls))
+	updates := make([]*store.AuditedUrl, 0, len(a.Urls))
+	issueModels := make([]*store.Issue, 0)
+	seen := make(map[string]struct{})
+
+	for i := range a.Urls {
+		u := a.Urls[i]
+		u.CalculateSummary()
+		present[u.URL] = struct{}{}
+
+		if old, ok := oldByURL[u.URL]; ok {
+			u.State = domain.UrlStateActive
+			u.CreatedAt = old.CreatedAt
+			u.LastAudited = now
+			updates = append(updates, store.AuditedUrlModel(a.ID, u))
+		} else {
+			u.State = domain.UrlStateNew
+			u.CreatedAt = now
+			u.LastAudited = now
+			inserts = append(inserts, store.AuditedUrlModel(a.ID, u))
+		}
+
+		for j := range u.Issues {
+			issue := &u.Issues[j]
+			url := issueURL(u)
+			id := store.IssueID(a.ID, url, issue.CheckName)
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			if oldRow, ok := oldByID[id]; ok {
+				applyIssueTransition(&oldRow, issue, now)
+			} else {
+				issue.PriorSeverity = ""
+				issue.Lifecycle = domain.LifecycleNew
+			}
+			issueModels = append(issueModels, store.IssueModel(a.ID, url, issue, now))
+		}
+	}
+
+	a.CalculateScore()
+
+	if err := tx.Save(store.AuditModel(a)).Error; err != nil {
+		return fmt.Errorf("update audit: %w", err)
+	}
+
+	for _, model := range updates {
+		if err := tx.Save(model).Error; err != nil {
+			return fmt.Errorf("update audited urls: %w", err)
+		}
+	}
+	if err := createInBatches(tx, inserts); err != nil {
+		return fmt.Errorf("insert audited urls: %w", err)
+	}
+	// URLs audited by an earlier run that did not reappear stay stored and are
+	// flipped to missing. Their issues were removed above; their summary and
+	// timestamps keep describing the last run they were in.
+	for url, old := range oldByURL {
+		if _, ok := present[url]; ok {
+			continue
+		}
+		old.State = string(domain.UrlStateMissing)
+		if err := tx.Save(&old).Error; err != nil {
+			return fmt.Errorf("mark missing urls: %w", err)
+		}
+	}
+	if err := createInBatches(tx, issueModels); err != nil {
+		return fmt.Errorf("insert issues: %w", err)
+	}
+	return nil
+}
+
+// captureSnapshots records a finished run in the timeline, scoped to the
+// workflows the run actually performed: a check snapshot only when checks ran,
+// and a graph snapshot only when graph extraction ran. A run can therefore
+// contribute to one timeline, the other, or both.
+func (s *AuditService) captureSnapshots(ctx context.Context, a *domain.Audit) error {
+	if len(a.CheckNames) > 0 {
+		if err := s.captureCheckSnapshot(ctx, a.ID); err != nil {
+			return err
+		}
+	}
+	if a.GraphEnabled {
+		if err := s.captureGraphSnapshot(ctx, a.ID, a.Duration); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// captureCheckSnapshot stores the check dashboard state of the audit as a new
+// snapshot row after a run. The snapshot is read back through GetByID so it
+// matches exactly what the dashboard shows, including URL rows kept as missing
+// from earlier runs.
+func (s *AuditService) captureCheckSnapshot(ctx context.Context, auditID string) error {
 	a, err := s.GetByID(ctx, auditID)
 	if err != nil {
 		return fmt.Errorf("load audit for snapshot: %w", err)
@@ -228,6 +352,30 @@ func (s *AuditService) captureSnapshot(ctx context.Context, auditID string) erro
 	snap := domain.NewAuditSnapshot(a, time.Now().UTC())
 	if err := s.db.WithContext(ctx).Create(store.AuditSnapshotModel(&snap)).Error; err != nil {
 		return fmt.Errorf("insert audit snapshot: %w", err)
+	}
+	return nil
+}
+
+// captureGraphSnapshot stores the graph state of the audit as a new
+// graph_snapshots row after a graph run.
+func (s *AuditService) captureGraphSnapshot(ctx context.Context, auditID string, duration time.Duration) error {
+	summary, err := s.graph.Summary(ctx, auditID)
+	if err != nil {
+		return fmt.Errorf("load graph summary for snapshot: %w", err)
+	}
+	snap := domain.GraphSnapshot{
+		AuditID:       auditID,
+		CreatedAt:     time.Now().UTC(),
+		TotalNodes:    summary.TotalNodes,
+		TotalEdges:    summary.TotalEdges,
+		InternalNodes: summary.TotalNodes - summary.ExternalNodes,
+		ExternalNodes: summary.ExternalNodes,
+		RootNodes:     summary.RootNodes,
+		Filetypes:     summary.Filetypes,
+		Duration:      duration,
+	}
+	if err := s.db.WithContext(ctx).Create(store.GraphSnapshotModel(&snap)).Error; err != nil {
+		return fmt.Errorf("insert graph snapshot: %w", err)
 	}
 	return nil
 }
@@ -579,6 +727,25 @@ func (s *AuditService) ListSnapshots(ctx context.Context, auditID string, limit 
 	return snapshots, nil
 }
 
+// ListGraphSnapshots returns the newest graph snapshots of the audit, newest
+// first, capped at limit.
+func (s *AuditService) ListGraphSnapshots(ctx context.Context, auditID string, limit int) ([]*domain.GraphSnapshot, error) {
+	var models []store.GraphSnapshot
+	query := s.db.WithContext(ctx).Where("audit_id = ?", auditID).Order("created_at DESC").Order("rowid DESC")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	if err := query.Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("list graph snapshots: %w", err)
+	}
+
+	snapshots := make([]*domain.GraphSnapshot, 0, len(models))
+	for i := range models {
+		snapshots = append(snapshots, models[i].ToDomain())
+	}
+	return snapshots, nil
+}
+
 func (s *AuditService) Delete(ctx context.Context, id string) error {
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("audit_id = ?", id).Delete(&store.AuditedUrl{}).Error; err != nil {
@@ -588,6 +755,12 @@ func (s *AuditService) Delete(ctx context.Context, id string) error {
 			return err
 		}
 		if err := tx.Where("audit_id = ?", id).Delete(&store.AuditSnapshot{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("audit_id = ?", id).Delete(&store.GraphSnapshot{}).Error; err != nil {
+			return err
+		}
+		if err := s.graph.Delete(tx, id); err != nil {
 			return err
 		}
 		return tx.Delete(&store.Audit{}, "id = ?", id).Error
@@ -621,10 +794,16 @@ func (s *AuditService) ResetData(ctx context.Context, id string) error {
 		if err := tx.Where("audit_id = ?", id).Delete(&store.AuditSnapshot{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("audit_id = ?", id).Delete(&store.GraphSnapshot{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("audit_id = ?", id).Delete(&store.AuditedUrl{}).Error; err != nil {
 			return err
 		}
 		if err := tx.Where("audit_id = ?", id).Delete(&store.Issue{}).Error; err != nil {
+			return err
+		}
+		if err := s.graph.Delete(tx, id); err != nil {
 			return err
 		}
 		return nil

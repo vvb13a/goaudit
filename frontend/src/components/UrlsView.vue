@@ -758,7 +758,7 @@ onBeforeUnmount(() => {
         </template>
         <template #paginatorend>
           <div class="flex items-center gap-1 text-sm text-slate-500">
-            <Button label="Clear filters" text size="small" @click="resetFilters">
+            <Button label="Clear" text size="small" @click="resetFilters">
               <template #icon><FilterSlash :size="16" /></template>
             </Button>
             <Button

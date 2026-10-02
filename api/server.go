@@ -65,6 +65,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/audits/{id}/issues/{issueId}", s.handleGetIssue)
 	s.mux.HandleFunc("GET /api/audits/{id}/issue-filters", s.handleIssueFilters)
 	s.mux.HandleFunc("GET /api/audits/{id}/checks", s.handleAuditChecks)
+	s.mux.HandleFunc("GET /api/audits/{id}/graph", s.handleGraphAll)
+	s.mux.HandleFunc("GET /api/audits/{id}/graph/snapshots", s.handleListGraphSnapshots)
+	s.mux.HandleFunc("GET /api/audits/{id}/graph/nodes", s.handleGraphNodes)
+	s.mux.HandleFunc("GET /api/audits/{id}/graph/node", s.handleGraphNode)
+	s.mux.HandleFunc("GET /api/audits/{id}/graph/edges", s.handleGraphEdges)
+	s.mux.HandleFunc("GET /api/audits/{id}/graph/summary", s.handleGraphSummary)
 	s.mux.HandleFunc("GET /api/checks", s.handleChecks)
 	s.mux.HandleFunc("GET /api/config", s.handleConfig)
 	s.mux.HandleFunc("PUT /api/config", s.handleUpdateConfig)
@@ -259,11 +265,27 @@ func (s *Server) handleListSnapshots(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, snapshots)
 }
 
+func (s *Server) handleListGraphSnapshots(w http.ResponseWriter, r *http.Request) {
+	limit := 20
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := parsePositiveInt(raw); err == nil {
+			limit = n
+		}
+	}
+	snapshots, err := s.deps.AuditService.ListGraphSnapshots(r.Context(), r.PathValue("id"), limit)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshots)
+}
+
 type checkInfo struct {
 	Name        string `json:"name"`
 	Label       string `json:"label"`
 	Description string `json:"description"`
 	Category    string `json:"category"`
+	Scope       string `json:"scope"`
 }
 
 func (s *Server) handleChecks(w http.ResponseWriter, _ *http.Request) {
@@ -276,6 +298,7 @@ func (s *Server) handleChecks(w http.ResponseWriter, _ *http.Request) {
 			Label:       info.Label,
 			Description: info.Description,
 			Category:    string(info.Category),
+			Scope:       string(info.Scope),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

@@ -3,9 +3,11 @@ import {
   Copy,
   EllipsisV,
   ExternalLink,
+  Moon,
   Play,
   Plus,
   Refresh,
+  Sun,
   Trash,
 } from '@primeicons/vue'
 import Button from 'primevue/button'
@@ -15,6 +17,7 @@ import Tag from 'primevue/tag'
 import { computed, ref } from 'vue'
 import type { AuditSummary } from '../types'
 import { timeAgo } from '../lib/format'
+import { isDark, toggleColorScheme } from '../lib/colorScheme'
 
 const props = defineProps<{
   audits: AuditSummary[]
@@ -95,15 +98,29 @@ function severityFor(score: number): 'success' | 'warn' | 'danger' {
         <div class="text-lg font-semibold text-slate-800">GoAudit</div>
         <div class="text-xs text-slate-400">Audits</div>
       </div>
-      <Button
-        text
-        rounded
-        aria-label="Refresh audits"
-        :loading="loading"
-        @click="emit('refresh')"
-      >
-        <template #icon><Refresh :size="16" /></template>
-      </Button>
+      <div class="flex items-center gap-1">
+        <Button
+          text
+          rounded
+          :aria-label="isDark ? 'Switch to light mode' : 'Switch to dark mode'"
+          :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'"
+          @click="toggleColorScheme"
+        >
+          <template #icon>
+            <Sun v-if="isDark" :size="16" />
+            <Moon v-else :size="16" />
+          </template>
+        </Button>
+        <Button
+          text
+          rounded
+          aria-label="Refresh audits"
+          :loading="loading"
+          @click="emit('refresh')"
+        >
+          <template #icon><Refresh :size="16" /></template>
+        </Button>
+      </div>
     </div>
 
     <div class="px-3 pb-2">

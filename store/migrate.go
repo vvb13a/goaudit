@@ -39,6 +39,59 @@ func migrateRemovedTransferStatsCheck(db *gorm.DB) error {
 	return removeStringFromJSONArray(db, "audits", "check_names", "transfer_stats_log")
 }
 
+// migrateRemovedInternalLinksCheck strips the removed internal_links check from
+// the stored check_names of every audit. The external_links name is kept: the
+// new graph check reuses it. It is idempotent.
+func migrateRemovedInternalLinksCheck(db *gorm.DB) error {
+	return removeStringFromJSONArray(db, "audits", "check_names", "internal_links")
+}
+
+// migrateGraphNodeValidation backfills the status_code/last_validated columns
+// of graph_nodes, which were added after the table already existed. Non-audited
+// nodes take their result from the global link_targets table, audited pages
+// from the fetch recorded in audited_urls. It is idempotent.
+func migrateGraphNodeValidation(db *gorm.DB) error {
+	if err := db.Exec(`
+		UPDATE graph_nodes
+		SET status_code = (SELECT t.status_code FROM link_targets t WHERE t.url = graph_nodes.url),
+		    last_validated = (SELECT t.validated_at FROM link_targets t WHERE t.url = graph_nodes.url)
+		WHERE EXISTS (SELECT 1 FROM link_targets t WHERE t.url = graph_nodes.url)
+	`).Error; err != nil {
+		return err
+	}
+	return db.Exec(`
+		UPDATE graph_nodes
+		SET status_code = (SELECT a.status_code FROM audited_urls a
+			WHERE a.audit_id = graph_nodes.audit_id
+			  AND (a.final_url = graph_nodes.url OR a.url = graph_nodes.url)
+			ORDER BY a.last_audited_at DESC LIMIT 1),
+		    last_validated = (SELECT a.last_audited_at FROM audited_urls a
+			WHERE a.audit_id = graph_nodes.audit_id
+			  AND (a.final_url = graph_nodes.url OR a.url = graph_nodes.url)
+			ORDER BY a.last_audited_at DESC LIMIT 1)
+		WHERE audited = 1
+		  AND EXISTS (SELECT 1 FROM audited_urls a
+			WHERE a.audit_id = graph_nodes.audit_id
+			  AND (a.final_url = graph_nodes.url OR a.url = graph_nodes.url))
+	`).Error
+}
+
+// migrateJunkGraphNodes removes graph nodes whose URL is markup that leaked out
+// of a srcset (encoded angle brackets, e.g. "%3Csvg..."), together with their
+// edges. New graphs never contain these because extraction filters them; this
+// cleans up graphs built before that filter existed. It is idempotent.
+func migrateJunkGraphNodes(db *gorm.DB) error {
+	const junk = "instr(lower(url), '%3c') > 0 OR instr(lower(url), '%3e') > 0"
+	if err := db.Exec(`
+		DELETE FROM graph_edges
+		WHERE source_node_id IN (SELECT id FROM graph_nodes WHERE ` + junk + `)
+		   OR target_node_id IN (SELECT id FROM graph_nodes WHERE ` + junk + `)
+	`).Error; err != nil {
+		return err
+	}
+	return db.Exec("DELETE FROM graph_nodes WHERE " + junk).Error
+}
+
 // removeStringFromJSONArray drops one value from a JSON-encoded string array
 // stored in a text column.
 func removeStringFromJSONArray(db *gorm.DB, table, column, value string) error {

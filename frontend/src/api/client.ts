@@ -6,6 +6,14 @@ import type {
   CheckQuery,
   ChecksResponse,
   DashboardResponse,
+  GraphAllResponse,
+  GraphEdgeQuery,
+  GraphEdgesResponse,
+  GraphNode,
+  GraphNodeQuery,
+  GraphNodesResponse,
+  GraphSnapshot,
+  GraphSummary,
   Issue,
   IssueFilters,
   IssueQuery,
@@ -127,6 +135,15 @@ export function listSnapshots(
   )
 }
 
+export function listGraphSnapshots(
+  id: string,
+  limit = 1000,
+): Promise<GraphSnapshot[]> {
+  return getJSON<GraphSnapshot[]>(
+    `/api/audits/${encodeURIComponent(id)}/graph/snapshots?limit=${limit}`,
+  )
+}
+
 export function listChecks(): Promise<CheckInfo[]> {
   return getJSON<CheckInfo[]>('/api/checks')
 }
@@ -217,6 +234,72 @@ export function listUrls(
 
   return getJSON<UrlsResponse>(
     `/api/audits/${encodeURIComponent(auditId)}/urls?${params.toString()}`,
+  )
+}
+
+export function listGraphNodes(
+  auditId: string,
+  query: GraphNodeQuery,
+): Promise<GraphNodesResponse> {
+  const params = new URLSearchParams()
+  params.set('page', String(query.page))
+  params.set('limit', String(query.limit))
+  if (query.sort) params.set('sort', query.sort)
+  if (query.order) params.set('order', query.order)
+  if (query.filetypes?.length) params.set('filetype', query.filetypes.join(','))
+  if (query.external !== undefined) params.set('external', String(query.external))
+  if (query.root !== undefined) params.set('root', String(query.root))
+  if (query.url) params.set('url', query.url)
+  if (query.firstSeenFrom) params.set('first_seen_min', query.firstSeenFrom)
+  if (query.firstSeenTo) params.set('first_seen_max', query.firstSeenTo)
+  if (query.lastSeenFrom) params.set('last_seen_min', query.lastSeenFrom)
+  if (query.lastSeenTo) params.set('last_seen_max', query.lastSeenTo)
+  if (query.statusMin !== undefined) params.set('status_min', String(query.statusMin))
+  if (query.statusMax !== undefined) params.set('status_max', String(query.statusMax))
+  if (query.lastValidatedFrom) params.set('last_validated_min', query.lastValidatedFrom)
+  if (query.lastValidatedTo) params.set('last_validated_max', query.lastValidatedTo)
+
+  return getJSON<GraphNodesResponse>(
+    `/api/audits/${encodeURIComponent(auditId)}/graph/nodes?${params.toString()}`,
+  )
+}
+
+export function listGraphEdges(
+  auditId: string,
+  query: GraphEdgeQuery,
+): Promise<GraphEdgesResponse> {
+  const params = new URLSearchParams()
+  params.set('page', String(query.page))
+  params.set('limit', String(query.limit))
+  if (query.sort) params.set('sort', query.sort)
+  if (query.order) params.set('order', query.order)
+  if (query.types?.length) params.set('type', query.types.join(','))
+  if (query.sourceId) params.set('source_id', query.sourceId)
+  if (query.targetId) params.set('target_id', query.targetId)
+  if (query.source) params.set('source', query.source)
+  if (query.target) params.set('target', query.target)
+
+  return getJSON<GraphEdgesResponse>(
+    `/api/audits/${encodeURIComponent(auditId)}/graph/edges?${params.toString()}`,
+  )
+}
+
+export function getGraphData(auditId: string): Promise<GraphAllResponse> {
+  return getJSON<GraphAllResponse>(
+    `/api/audits/${encodeURIComponent(auditId)}/graph`,
+  )
+}
+
+export function getGraphNode(auditId: string, nodeId: string): Promise<GraphNode> {
+  const params = new URLSearchParams({ node: nodeId })
+  return getJSON<GraphNode>(
+    `/api/audits/${encodeURIComponent(auditId)}/graph/node?${params.toString()}`,
+  )
+}
+
+export function getGraphSummary(auditId: string): Promise<GraphSummary> {
+  return getJSON<GraphSummary>(
+    `/api/audits/${encodeURIComponent(auditId)}/graph/summary`,
   )
 }
 

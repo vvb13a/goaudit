@@ -27,6 +27,10 @@ type Audit struct {
 	Duration    time.Duration   `json:"duration"`
 	Score       float64         `json:"score"`
 	Urls        []*AuditedUrl   `json:"urls"`
+
+	// GraphEnabled records whether the run performed graph extraction. It is
+	// transient (not stored on the audit row) and drives graph snapshotting.
+	GraphEnabled bool `json:"-"`
 }
 
 // CalculateScore derives the audit score from the per-URL scores. It

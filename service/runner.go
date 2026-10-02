@@ -13,13 +13,16 @@ import (
 
 type ProgressCallback func(currentURL string, completed int, total int)
 
-// Runner executes audits. It is stateless: each run builds its own fetcher
-// and pacing settings from the effective Config of the audit being run, so
-// every audit can carry its own engine configuration.
-type Runner struct{}
+// Runner executes audits. Each run builds its own fetcher and pacing settings
+// from the effective Config of the audit being run, so every audit can carry
+// its own engine configuration. The optional graph service extracts the link
+// graph from each fetched document when the graph workflow is enabled.
+type Runner struct {
+	graph *GraphService
+}
 
-func NewRunner() *Runner {
-	return &Runner{}
+func NewRunner(graph *GraphService) *Runner {
+	return &Runner{graph: graph}
 }
 
 // fetcherFor builds the engine fetcher from an effective configuration.
@@ -83,14 +86,15 @@ func (r *Runner) ExecuteAudit(
 	}
 
 	audit := &domain.Audit{
-		ID:          fmt.Sprintf("aud_%d", time.Now().UnixNano()),
-		Name:        name,
-		Description: description,
-		Targets:     targets,
-		CheckNames:  checkNames(checks),
-		Config:      configRaw,
-		StartedAt:   time.Now().UTC(),
-		Urls:        make([]*domain.AuditedUrl, total),
+		ID:           fmt.Sprintf("aud_%d", time.Now().UnixNano()),
+		Name:         name,
+		Description:  description,
+		Targets:      targets,
+		CheckNames:   checkNames(checks),
+		Config:       configRaw,
+		StartedAt:    time.Now().UTC(),
+		Urls:         make([]*domain.AuditedUrl, total),
+		GraphEnabled: cfg.EnableGraph,
 	}
 
 	if onProgress != nil {
@@ -103,12 +107,6 @@ func (r *Runner) ExecuteAudit(
 		semaphore = make(chan struct{}, concurrency)
 		delay     = cfg.RequestDelay()
 	)
-
-	// Link-graph extraction is gated by cfg.EnableGraph: each fetched document
-	// would yield its outbound links. It is not implemented yet, so the toggle
-	// is stored and respected as a no-op; no edges are collected.
-	if cfg.EnableGraph {
-	}
 
 	for i, targetURL := range resolvedURLs {
 		if ctx.Err() != nil {
@@ -130,7 +128,7 @@ func (r *Runner) ExecuteAudit(
 				time.Sleep(delay)
 			}
 
-			audited := r.auditURL(ctx, fetcher, u, checks)
+			audited := r.auditURL(ctx, fetcher, u, checks, cfg.EnableGraph)
 			audit.Urls[idx] = audited
 
 			currentCompleted := int(atomic.AddInt64(&completed, 1))
@@ -185,13 +183,13 @@ func (r *Runner) AuditURL(ctx context.Context, targetURL string, checks []domain
 	if len(checks) == 0 {
 		return nil, fmt.Errorf("cannot audit a URL without checks")
 	}
-	return r.auditURL(ctx, fetcherFor(cfg), targetURL, checks), nil
+	return r.auditURL(ctx, fetcherFor(cfg), targetURL, checks, cfg.EnableGraph), nil
 }
 
 // auditURL runs every check against a single resolved target. The resulting
 // AuditedUrl carries only the raw page metadata and issues; its State,
 // timestamps and UrlSummary are filled in when the run is persisted.
-func (r *Runner) auditURL(ctx context.Context, fetcher *Fetcher, targetURL string, checks []domain.Check) *domain.AuditedUrl {
+func (r *Runner) auditURL(ctx context.Context, fetcher *Fetcher, targetURL string, checks []domain.Check, extractGraph bool) *domain.AuditedUrl {
 	u := &domain.AuditedUrl{
 		URL: targetURL,
 	}
@@ -213,6 +211,10 @@ func (r *Runner) auditURL(ctx context.Context, fetcher *Fetcher, targetURL strin
 	u.FinalURL = doc.FinalURL
 	u.StatusCode = doc.StatusCode
 	u.Duration = doc.Duration
+
+	if extractGraph && r.graph != nil {
+		u.Links = r.graph.Extract(doc)
+	}
 
 	for _, check := range checks {
 		if !check.Supports(doc) {

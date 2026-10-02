@@ -22,7 +22,7 @@ func Open(path string) (*gorm.DB, error) {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}
 
-	if err := db.AutoMigrate(&Audit{}, &AuditedUrl{}, &Issue{}, &AuditSnapshot{}); err != nil {
+	if err := db.AutoMigrate(&Audit{}, &AuditedUrl{}, &Issue{}, &AuditSnapshot{}, &GraphNode{}, &GraphEdge{}, &GraphSnapshot{}, &LinkTarget{}); err != nil {
 		return nil, fmt.Errorf("auto-migrate schema: %w", err)
 	}
 
@@ -31,6 +31,15 @@ func Open(path string) (*gorm.DB, error) {
 	}
 	if err := migrateRemovedTransferStatsCheck(db); err != nil {
 		return nil, fmt.Errorf("migrate removed transfer_stats_log check: %w", err)
+	}
+	if err := migrateRemovedInternalLinksCheck(db); err != nil {
+		return nil, fmt.Errorf("migrate removed internal_links check: %w", err)
+	}
+	if err := migrateJunkGraphNodes(db); err != nil {
+		return nil, fmt.Errorf("migrate junk graph nodes: %w", err)
+	}
+	if err := migrateGraphNodeValidation(db); err != nil {
+		return nil, fmt.Errorf("migrate graph node validation: %w", err)
 	}
 
 	return db, nil
