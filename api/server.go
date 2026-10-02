@@ -57,6 +57,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/audits/{id}/run", s.handleStartRun)
 	s.mux.HandleFunc("GET /api/audits/{id}/run", s.handleRunStatus)
 	s.mux.HandleFunc("POST /api/audits/{id}/recheck", s.handleRecheck)
+	s.mux.HandleFunc("GET /api/audits/{id}/counts", s.handleAuditCounts)
 	s.mux.HandleFunc("GET /api/audits/{id}/dashboard", s.handleDashboard)
 	s.mux.HandleFunc("GET /api/audits/{id}/snapshots", s.handleListSnapshots)
 	s.mux.HandleFunc("GET /api/audits/{id}/urls", s.handleListURLs)
@@ -248,6 +249,15 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Checks:   checks,
 		Previous: previous,
 	})
+}
+
+func (s *Server) handleAuditCounts(w http.ResponseWriter, r *http.Request) {
+	counts, err := s.deps.AuditService.Counts(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, counts)
 }
 
 func (s *Server) handleListSnapshots(w http.ResponseWriter, r *http.Request) {

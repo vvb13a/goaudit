@@ -63,6 +63,14 @@ export interface AuditSnapshot {
   timings: SnapshotTimings
 }
 
+export interface AuditCounts {
+  urls: number
+  issues: number
+  checks: number
+  nodes: number
+  edges: number
+}
+
 export interface DashboardResponse {
   audit: AuditSummary
   metrics: AuditMetrics

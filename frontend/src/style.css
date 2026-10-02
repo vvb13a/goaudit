@@ -68,6 +68,16 @@
 }
 
 /*
+ * Active navigation item: a subtle primary tint rather than a solid button, so
+ * the current section reads as a highlighted link.
+ */
+.nav-active {
+  background-color: color-mix(in srgb, var(--p-primary-color) 12%, transparent);
+  color: var(--p-primary-color);
+  font-weight: 500;
+}
+
+/*
  * Box the column header row. Only border widths are set here; the color and
  * style come from the datatable theme tokens, so hover/sorted/filter states
  * are left untouched. The paginator gets its all-around border from the

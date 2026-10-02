@@ -50,3 +50,13 @@ type AuditFilter struct {
 	Limit  int
 	Offset int
 }
+
+// AuditCounts is the number of rows behind each view of an audit, used for the
+// sidebar badges.
+type AuditCounts struct {
+	URLs   int `json:"urls"`
+	Issues int `json:"issues"`
+	Checks int `json:"checks"`
+	Nodes  int `json:"nodes"`
+	Edges  int `json:"edges"`
+}

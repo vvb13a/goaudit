@@ -1,5 +1,6 @@
 import type {
   AuditConfig,
+  AuditCounts,
   AuditSnapshot,
   AuditSummary,
   CheckInfo,
@@ -118,6 +119,10 @@ export function recheckUrl(
     'POST',
     { url },
   )
+}
+
+export function getAuditCounts(id: string): Promise<AuditCounts> {
+  return getJSON<AuditCounts>(`/api/audits/${encodeURIComponent(id)}/counts`)
 }
 
 export function getDashboard(id: string): Promise<DashboardResponse> {

@@ -746,6 +746,35 @@ func (s *AuditService) ListGraphSnapshots(ctx context.Context, auditID string, l
 	return snapshots, nil
 }
 
+// Counts returns the number of URLs, issues, checks, graph nodes and graph
+// edges of an audit, for the sidebar badges.
+func (s *AuditService) Counts(ctx context.Context, auditID string) (*domain.AuditCounts, error) {
+	db := s.db.WithContext(ctx)
+	var urls, issues, checks, nodes, edges int64
+	if err := db.Model(&store.AuditedUrl{}).Where("audit_id = ?", auditID).Count(&urls).Error; err != nil {
+		return nil, fmt.Errorf("count urls: %w", err)
+	}
+	if err := db.Model(&store.Issue{}).Where("audit_id = ?", auditID).Count(&issues).Error; err != nil {
+		return nil, fmt.Errorf("count issues: %w", err)
+	}
+	if err := db.Model(&store.Issue{}).Where("audit_id = ?", auditID).Distinct("check_name").Count(&checks).Error; err != nil {
+		return nil, fmt.Errorf("count checks: %w", err)
+	}
+	if err := db.Model(&store.GraphNode{}).Where("audit_id = ?", auditID).Count(&nodes).Error; err != nil {
+		return nil, fmt.Errorf("count graph nodes: %w", err)
+	}
+	if err := db.Model(&store.GraphEdge{}).Where("audit_id = ?", auditID).Count(&edges).Error; err != nil {
+		return nil, fmt.Errorf("count graph edges: %w", err)
+	}
+	return &domain.AuditCounts{
+		URLs:   int(urls),
+		Issues: int(issues),
+		Checks: int(checks),
+		Nodes:  int(nodes),
+		Edges:  int(edges),
+	}, nil
+}
+
 func (s *AuditService) Delete(ctx context.Context, id string) error {
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("audit_id = ?", id).Delete(&store.AuditedUrl{}).Error; err != nil {

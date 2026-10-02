@@ -1,28 +1,13 @@
 <script setup lang="ts">
-import {
-  Box,
-  ChartBar,
-  ChevronDown,
-  Clipboard,
-  Clock,
-  Cog,
-  ExclamationTriangle,
-  Heart,
-  Link,
-  List,
-  Map,
-  ShareAlt,
-  Sitemap,
-} from '@primeicons/vue'
+import { ExclamationTriangle } from '@primeicons/vue'
 import ConfirmDialog from 'primevue/confirmdialog'
-import Menu from 'primevue/menu'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import Toast from 'primevue/toast'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
-import { type Component, computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { RouterView, useRoute, useRouter } from 'vue-router'
 import * as api from './api/client'
 import AuditSidebar from './components/AuditSidebar.vue'
 import NewAuditDialog from './components/NewAuditDialog.vue'
@@ -31,29 +16,6 @@ import RunProgressDialog from './components/RunProgressDialog.vue'
 import { notifyDataChanged, dataVersion } from './lib/appState'
 import { useDelayedLoading } from './lib/loading'
 import type { AuditSummary, RunOverride, RunStatus } from './types'
-
-type Tab = 'dashboard' | 'health' | 'graph' | 'timeline' | 'config'
-
-const tabs: { id: Tab; label: string; icon: Component }[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: ChartBar },
-  { id: 'health', label: 'Health', icon: Heart },
-  { id: 'graph', label: 'Graph', icon: Sitemap },
-  { id: 'timeline', label: 'Timeline', icon: Clock },
-  { id: 'config', label: 'Config', icon: Cog },
-]
-
-const tabNames = tabs.map((t) => t.id) as string[]
-
-// The substeps each dropdown tab groups, with the sub-route used when the
-// audit is selected while that tab is active.
-const healthRoutes = ['urls', 'issues', 'checks']
-const defaultRoute: Record<Tab, string> = {
-  dashboard: 'dashboard',
-  health: 'urls',
-  graph: 'graph',
-  timeline: 'timeline',
-  config: 'config',
-}
 
 const route = useRoute()
 const router = useRouter()
@@ -76,46 +38,7 @@ const runConfigVisible = ref(false)
 let runTimer: ReturnType<typeof setTimeout> | undefined
 
 const selectedId = computed(() => (route.params.auditId as string | undefined) ?? null)
-// The Health tab groups the URL/issue/check sub-routes and the Graph tab groups
-// the graph sub-routes; any sub-route keeps its dropdown highlighted.
-const activeTab = computed<Tab>(() => {
-  const name = route.name as string
-  if (healthRoutes.includes(name)) return 'health'
-  if (name && name.startsWith('graph')) return 'graph'
-  return tabNames.includes(name) ? (name as Tab) : 'dashboard'
-})
-
-const healthMenu = ref<InstanceType<typeof Menu>>()
-const graphMenu = ref<InstanceType<typeof Menu>>()
-
-const healthMenuItems = computed(() => [
-  { label: 'URLs', icon: Link, command: () => openSub('urls') },
-  { label: 'Issues', icon: List, command: () => openSub('issues') },
-  { label: 'Checks', icon: Clipboard, command: () => openSub('checks') },
-])
-
-const graphMenuItems = computed(() => [
-  { label: 'Navigator', icon: Sitemap, command: () => openSub('graph-navigator') },
-  { label: 'Visualization', icon: Map, command: () => openSub('graph-map') },
-  { label: 'Nodes', icon: Box, command: () => openSub('graph-nodes') },
-  { label: 'Edges', icon: ShareAlt, command: () => openSub('graph-edges') },
-])
-
-function toggleHealthMenu(event: Event): void {
-  healthMenu.value?.toggle(event)
-}
-
-function toggleGraphMenu(event: Event): void {
-  graphMenu.value?.toggle(event)
-}
-
-function openSub(name: string): void {
-  if (selectedId.value) {
-    router.push({ name, params: { auditId: selectedId.value } })
-  } else {
-    router.push({ name: 'audits' })
-  }
-}
+const isDashboard = computed(() => route.name === 'dashboard')
 
 function toMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
@@ -153,29 +76,6 @@ async function loadAudits(): Promise<void> {
   } finally {
     loadingAudits.value = false
   }
-}
-
-function selectAudit(id: string): void {
-  router.push({ name: defaultRoute[activeTab.value], params: { auditId: id } })
-}
-
-// A tab is a real link so it can be opened in a new tab/window (right-click or
-// middle-click) and copied. Without a selected audit it falls back to the
-// audit list.
-function tabTarget(id: Tab) {
-  return selectedId.value
-    ? { name: id, params: { auditId: selectedId.value } }
-    : { name: 'audits' }
-}
-
-// Open the audit on the current tab in a new browser tab, so two audits can be
-// compared side by side.
-function onOpenTab(audit: AuditSummary): void {
-  const href = router.resolve({
-    name: defaultRoute[activeTab.value],
-    params: { auditId: audit.id },
-  }).href
-  window.open(href, '_blank', 'noopener,noreferrer')
 }
 
 function onCreate(): void {
@@ -338,75 +238,35 @@ onBeforeUnmount(clearTimer)
       :selected-id="selectedId"
       :loading="loadingAudits"
       :running-id="runningAuditId"
-      @select="selectAudit"
-      @refresh="loadAudits"
       @create="onCreate"
       @run="onRunRequest"
       @duplicate="onDuplicate"
-      @open-tab="onOpenTab"
       @reset="onReset"
       @delete="onDelete"
     />
 
-    <main class="flex flex-1 flex-col overflow-hidden">
-      <nav class="flex items-center gap-1 border-b border-slate-200 bg-white px-6">
-        <template v-for="tab in tabs" :key="tab.id">
-          <button
-            v-if="tab.id === 'health' || tab.id === 'graph'"
-            type="button"
-            class="flex items-center gap-2 border-b-2 px-3 py-3 text-sm font-medium transition-colors"
-            :class="
-              tab.id === activeTab
-                ? 'border-[var(--p-primary-color)] text-[var(--p-primary-color)]'
-                : 'border-transparent text-slate-400 hover:text-slate-600'
-            "
-            @click="tab.id === 'health' ? toggleHealthMenu($event) : toggleGraphMenu($event)"
-          >
-            <component :is="tab.icon" :size="16" />
-            {{ tab.label }}
-            <ChevronDown :size="12" />
-          </button>
-          <RouterLink
-            v-else
-            :to="tabTarget(tab.id)"
-            class="flex items-center gap-2 border-b-2 px-3 py-3 text-sm font-medium transition-colors"
-            :class="
-              tab.id === activeTab
-                ? 'border-[var(--p-primary-color)] text-[var(--p-primary-color)]'
-                : 'border-transparent text-slate-400 hover:text-slate-600'
-            "
-          >
-            <component :is="tab.icon" :size="16" />
-            {{ tab.label }}
-          </RouterLink>
-        </template>
-      </nav>
-      <Menu ref="healthMenu" :model="healthMenuItems" :popup="true" />
-      <Menu ref="graphMenu" :model="graphMenuItems" :popup="true" />
+    <main class="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div v-if="error" class="px-6 pt-6">
+        <Message severity="error">{{ error }}</Message>
+      </div>
 
-      <div class="flex min-h-0 flex-1 flex-col">
-        <div v-if="error" class="px-6 pt-6">
-          <Message severity="error">{{ error }}</Message>
-        </div>
+      <div
+        v-if="!selectedId"
+        class="flex flex-1 items-center justify-center text-slate-400"
+      >
+        <ProgressSpinner v-if="showAuditsLoading" />
+        <span v-else>Select an audit to get started.</span>
+      </div>
 
-        <div
-          v-if="!selectedId"
-          class="flex flex-1 items-center justify-center text-slate-400"
-        >
-          <ProgressSpinner v-if="showAuditsLoading" />
-          <span v-else>Select an audit to get started.</span>
-        </div>
-
-        <div
-          v-else
-          :class="
-            activeTab === 'dashboard'
-              ? 'flex-1 overflow-y-auto p-6'
-              : 'min-h-0 flex-1 overflow-hidden p-6'
-          "
-        >
-          <RouterView />
-        </div>
+      <div
+        v-else
+        :class="
+          isDashboard
+            ? 'flex-1 overflow-y-auto p-6'
+            : 'min-h-0 flex-1 overflow-hidden p-6'
+        "
+      >
+        <RouterView />
       </div>
     </main>
 
