@@ -81,8 +81,7 @@ type GraphNodeFilter struct {
 	FirstSeenTo       *time.Time
 	LastSeenFrom      *time.Time
 	LastSeenTo        *time.Time
-	StatusMin         *int
-	StatusMax         *int
+	Statuses          []int
 	LastValidatedFrom *time.Time
 	LastValidatedTo   *time.Time
 	Sort              string
@@ -108,11 +107,19 @@ type FiletypeCount struct {
 	Count    int    `json:"count"`
 }
 
+// StatusCodeCount is one bucket of the graph's status-code distribution. A
+// zero status_code means the node has not been validated yet.
+type StatusCodeCount struct {
+	StatusCode int `json:"status_code"`
+	Count      int `json:"count"`
+}
+
 // GraphSummary is the headline of an audit's graph.
 type GraphSummary struct {
-	TotalNodes    int             `json:"total_nodes"`
-	TotalEdges    int             `json:"total_edges"`
-	ExternalNodes int             `json:"external_nodes"`
-	RootNodes     int             `json:"root_nodes"`
-	Filetypes     []FiletypeCount `json:"filetypes"`
+	TotalNodes    int               `json:"total_nodes"`
+	TotalEdges    int               `json:"total_edges"`
+	ExternalNodes int               `json:"external_nodes"`
+	RootNodes     int               `json:"root_nodes"`
+	Filetypes     []FiletypeCount   `json:"filetypes"`
+	Statuses      []StatusCodeCount `json:"statuses"`
 }

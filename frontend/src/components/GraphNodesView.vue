@@ -11,7 +11,6 @@ import DataTable, {
   type DataTableSortEvent,
 } from 'primevue/datatable'
 import DatePicker from 'primevue/datepicker'
-import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import MultiSelect from 'primevue/multiselect'
@@ -23,7 +22,7 @@ import { dataVersion } from '../lib/appState'
 import { useDelayedLoading } from '../lib/loading'
 import { filetypeClass } from '../lib/graph'
 import { useTableQuery } from '../lib/tableQuery'
-import type { FiletypeCount, GraphNode } from '../types'
+import type { FiletypeCount, GraphNode, StatusCodeCount } from '../types'
 import EmptyState from './EmptyState.vue'
 
 const props = defineProps<{ auditId: string }>()
@@ -53,6 +52,7 @@ const menuItems = computed(() => [
 const items = ref<GraphNode[]>([])
 const total = ref(0)
 const filetypes = ref<FiletypeCount[]>([])
+const statuses = ref<StatusCodeCount[]>([])
 const loading = ref(false)
 const showTableLoading = useDelayedLoading(loading)
 const error = ref<string | null>(null)
@@ -68,8 +68,6 @@ const sortOrder = ref<1 | 0 | -1 | undefined>(undefined)
 const firstSeenRange = ref<Date[] | null>(null)
 const lastSeenRange = ref<Date[] | null>(null)
 const lastValidatedRange = ref<Date[] | null>(null)
-const statusMin = ref<number | null>(null)
-const statusMax = ref<number | null>(null)
 
 function formatDateTime(iso: string): string {
   if (!iso || iso.startsWith('0001-01-01')) return '–'
@@ -116,6 +114,19 @@ function parseRange(from: string | null, to: string | null): Date[] | null {
   return [start, end]
 }
 
+// syncDateFilterModel mirrors the date-range refs into the DataTable filter
+// model so the column header shows an active filter icon. The ranges are kept
+// in their own refs (not bound to filterModel) so they survive the table's
+// filter cloning.
+function syncDateFilterModel(): void {
+  filters.value = {
+    ...filters.value,
+    first_seen: { value: firstSeenRange.value, matchMode: 'contains' },
+    last_seen: { value: lastSeenRange.value, matchMode: 'contains' },
+    last_validated: { value: lastValidatedRange.value, matchMode: 'contains' },
+  }
+}
+
 type MatchMode = 'in' | 'contains'
 interface ColumnFilter {
   value: unknown
@@ -127,12 +138,12 @@ function defaultFilters(): Record<string, ColumnFilter> {
     url: { value: null, matchMode: 'contains' },
     filetype: { value: null, matchMode: 'in' },
     external: { value: null, matchMode: 'in' },
-    // The seen/validated ranges and the status range are filtered by their
-    // dedicated refs below, but the DataTable needs a filter-model entry per
-    // column to render its menu.
+    // The seen/validated ranges are filtered by their dedicated refs below,
+    // mirrored into the filter model so the column header shows an active
+    // filter icon, like the other columns.
     first_seen: { value: null, matchMode: 'contains' },
     last_seen: { value: null, matchMode: 'contains' },
-    status_code: { value: null, matchMode: 'contains' },
+    status_code: { value: null, matchMode: 'in' },
     last_validated: { value: null, matchMode: 'contains' },
   }
 }
@@ -148,6 +159,13 @@ const filetypeOptions = computed(() =>
   filetypes.value.map((f) => ({
     label: `${f.filetype} (${f.count.toLocaleString()})`,
     value: f.filetype,
+  })),
+)
+
+const statusOptions = computed(() =>
+  statuses.value.map((s) => ({
+    label: `${formatStatus(s.status_code)} (${s.count.toLocaleString()})`,
+    value: s.status_code,
   })),
 )
 
@@ -171,6 +189,12 @@ function selectedValues(field: string): string[] {
   if (Array.isArray(value)) return value as string[]
   if (typeof value === 'string' && value) return [value]
   return []
+}
+
+function selectedNumbers(field: string): number[] {
+  const value = filterValue(field)
+  if (!Array.isArray(value)) return []
+  return value.filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
 }
 
 function textValue(field: string): string {
@@ -203,20 +227,20 @@ function applyQuery(query: LocationQuery): void {
     return typeof value === 'string' && value ? value : null
   }
 
+  const intList = (key: string): number[] =>
+    list(key)
+      .map((v) => Number(v))
+      .filter((n) => Number.isFinite(n))
+
+  const statusFilter = intList('status')
   filters.value = {
     url: { value: single('url'), matchMode: 'contains' },
     filetype: { value: list('filetype').length ? list('filetype') : null, matchMode: 'in' },
     external: { value: list('external').length ? list('external') : null, matchMode: 'in' },
     first_seen: { value: null, matchMode: 'contains' },
     last_seen: { value: null, matchMode: 'contains' },
-    status_code: { value: null, matchMode: 'contains' },
+    status_code: { value: statusFilter.length ? statusFilter : null, matchMode: 'in' },
     last_validated: { value: null, matchMode: 'contains' },
-  }
-  const num = (key: string): number | null => {
-    const value = single(key)
-    if (value === null) return null
-    const n = Number(value)
-    return Number.isFinite(n) ? n : null
   }
   firstSeenRange.value = parseRange(single('first_seen_min'), single('first_seen_max'))
   lastSeenRange.value = parseRange(single('last_seen_min'), single('last_seen_max'))
@@ -224,8 +248,7 @@ function applyQuery(query: LocationQuery): void {
     single('last_validated_min'),
     single('last_validated_max'),
   )
-  statusMin.value = num('status_min')
-  statusMax.value = num('status_max')
+  syncDateFilterModel()
   sortField.value = single('sort') ?? undefined
   sortOrder.value = q.order === 'asc' ? 1 : q.order === 'desc' ? -1 : undefined
   const page = Number(q.page)
@@ -248,8 +271,8 @@ function serializeQuery(): Record<string, string> {
   if (lastFrom) query.last_seen_min = lastFrom
   const lastTo = rangeTo(lastSeenRange.value)
   if (lastTo) query.last_seen_max = lastTo
-  if (statusMin.value !== null) query.status_min = String(statusMin.value)
-  if (statusMax.value !== null) query.status_max = String(statusMax.value)
+  const status = selectedNumbers('status_code')
+  if (status.length) query.status = status.join(',')
   const validatedFrom = rangeFrom(lastValidatedRange.value)
   if (validatedFrom) query.last_validated_min = validatedFrom
   const validatedTo = rangeTo(lastValidatedRange.value)
@@ -282,14 +305,14 @@ async function load(): Promise<void> {
         firstSeenTo: rangeTo(firstSeenRange.value) || undefined,
         lastSeenFrom: rangeFrom(lastSeenRange.value) || undefined,
         lastSeenTo: rangeTo(lastSeenRange.value) || undefined,
-        statusMin: statusMin.value ?? undefined,
-        statusMax: statusMax.value ?? undefined,
+        statuses: selectedNumbers('status_code'),
         lastValidatedFrom: rangeFrom(lastValidatedRange.value) || undefined,
         lastValidatedTo: rangeTo(lastValidatedRange.value) || undefined,
       }),
     ])
     if (request !== requestId) return
     filetypes.value = summary.filetypes
+    statuses.value = summary.statuses
     items.value = data.items
     total.value = data.total
   } catch (e) {
@@ -308,8 +331,7 @@ const { sync } = useTableQuery({
     'first_seen_max',
     'last_seen_min',
     'last_seen_max',
-    'status_min',
-    'status_max',
+    'status',
     'last_validated_min',
     'last_validated_max',
     'sort',
@@ -343,6 +365,9 @@ function onSort(event: DataTableSortEvent): void {
 
 function onFilter(event: DataTableFilterEvent): void {
   filters.value = event.filters
+  // The table's filter change carries the column constraints it knows about;
+  // re-assert the date ranges so their header icons stay filled.
+  syncDateFilterModel()
   first.value = 0
   if (filterTimer) clearTimeout(filterTimer)
   filterTimer = setTimeout(sync, 250)
@@ -350,18 +375,9 @@ function onFilter(event: DataTableFilterEvent): void {
 
 function onDateFilter(): void {
   first.value = 0
+  syncDateFilterModel()
   if (filterTimer) clearTimeout(filterTimer)
   filterTimer = setTimeout(sync, 250)
-}
-
-function onStatusInput(field: 'statusMin' | 'statusMax', event: { value?: unknown }): void {
-  const raw = event?.value
-  const value =
-    typeof raw === 'number' ? raw : typeof raw === 'string' && raw !== '' ? Number(raw) : null
-  const parsed = value !== null && Number.isFinite(value) ? value : null
-  if (field === 'statusMin') statusMin.value = parsed
-  else statusMax.value = parsed
-  onDateFilter()
 }
 
 function resetFilters(): void {
@@ -370,8 +386,6 @@ function resetFilters(): void {
   firstSeenRange.value = null
   lastSeenRange.value = null
   lastValidatedRange.value = null
-  statusMin.value = null
-  statusMax.value = null
   sortField.value = undefined
   sortOrder.value = undefined
   first.value = 0
@@ -628,10 +642,9 @@ watch(dataVersion, () => {
         field="status_code"
         header="Status"
         sortable
+        filter-match-mode="in"
         :show-filter-match-modes="false"
-        :show-apply-button="false"
-        :show-clear-button="false"
-        :filter-menu-style="{ minWidth: '12rem' }"
+        :filter-menu-style="{ minWidth: '14rem' }"
         style="min-width: 6rem"
       >
         <template #body="{ data }">
@@ -639,23 +652,17 @@ watch(dataVersion, () => {
             {{ formatStatus(data.status_code) }}
           </span>
         </template>
-        <template #filter>
-          <div class="grid grid-cols-1 gap-2">
-            <InputNumber
-              :model-value="statusMin"
-              placeholder="Min"
-              :use-grouping="false"
-              class="w-24"
-              @input="onStatusInput('statusMin', $event)"
-            />
-            <InputNumber
-              :model-value="statusMax"
-              placeholder="Max"
-              :use-grouping="false"
-              class="w-24"
-              @input="onStatusInput('statusMax', $event)"
-            />
-          </div>
+        <template #filter="{ filterModel, filterCallback }">
+          <MultiSelect
+            v-model="filterModel.value"
+            :options="statusOptions"
+            option-label="label"
+            option-value="value"
+            placeholder="Any"
+            :show-clear="true"
+            class="w-full"
+            @change="filterCallback()"
+          />
         </template>
       </Column>
 

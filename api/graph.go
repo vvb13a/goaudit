@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,6 +61,7 @@ func (s *Server) handleGraphNodes(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	filter := domain.GraphNodeFilter{
 		Filetypes: splitCSV(q.Get("filetype")),
+		Statuses:  parseIntsCSV(q.Get("status")),
 		Search:    strings.TrimSpace(q.Get("url")),
 		Sort:      q.Get("sort"),
 		Order:     q.Get("order"),
@@ -76,12 +78,6 @@ func (s *Server) handleGraphNodes(w http.ResponseWriter, r *http.Request) {
 	filter.LastSeenTo = parseOptionalTime(q.Get("last_seen_max"))
 	filter.LastValidatedFrom = parseOptionalTime(q.Get("last_validated_min"))
 	filter.LastValidatedTo = parseOptionalTime(q.Get("last_validated_max"))
-	if n, ok := parseOptionalInt(q.Get("status_min")); ok {
-		filter.StatusMin = &n
-	}
-	if n, ok := parseOptionalInt(q.Get("status_max")); ok {
-		filter.StatusMax = &n
-	}
 
 	limit := clampInt(intParam(q.Get("limit"), 100), 1, 500)
 	page := intParam(q.Get("page"), 1)
@@ -163,6 +159,18 @@ func parseOptionalBool(raw string) (bool, bool) {
 	default:
 		return false, false
 	}
+}
+
+// parseIntsCSV parses a comma-separated list of integers, dropping any part
+// that is not a valid integer.
+func parseIntsCSV(raw string) []int {
+	var out []int
+	for _, part := range splitCSV(raw) {
+		if n, err := strconv.Atoi(part); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // parseOptionalTime parses an RFC3339 timestamp query value, returning nil when

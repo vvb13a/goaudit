@@ -67,6 +67,8 @@ type NumericConfigKey =
   | 'http_timeout_sec'
   | 'max_sitemap_depth'
   | 'link_cache_ttl_min'
+  | 'asset_request_delay_ms'
+  | 'asset_max_concurrency'
 
 const engineFields: {
   key: NumericConfigKey
@@ -77,6 +79,8 @@ const engineFields: {
   { key: 'request_delay_ms', label: 'Request delay (ms)', min: 0 },
   { key: 'http_timeout_sec', label: 'HTTP timeout (s)', min: 1 },
   { key: 'max_sitemap_depth', label: 'Max sitemap depth', min: 1 },
+  { key: 'asset_request_delay_ms', label: 'Asset request delay (ms)', min: 0 },
+  { key: 'asset_max_concurrency', label: 'Asset max concurrency', min: 1 },
 ]
 
 const targetsText = computed({

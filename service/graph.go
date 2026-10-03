@@ -510,11 +510,8 @@ func (s *GraphService) ListNodes(ctx context.Context, auditID string, f domain.G
 	if f.LastSeenTo != nil {
 		q = q.Where("last_seen <= ?", *f.LastSeenTo)
 	}
-	if f.StatusMin != nil {
-		q = q.Where("status_code >= ?", *f.StatusMin)
-	}
-	if f.StatusMax != nil {
-		q = q.Where("status_code <= ?", *f.StatusMax)
+	if len(f.Statuses) > 0 {
+		q = q.Where("status_code IN ?", f.Statuses)
 	}
 	if f.LastValidatedFrom != nil {
 		q = q.Where("last_validated >= ?", *f.LastValidatedFrom)
@@ -607,9 +604,13 @@ func (s *GraphService) GetNode(ctx context.Context, auditID, nodeID string) (*do
 	return model.ToDomain(), nil
 }
 
-// Summary returns the graph's headline totals and filetype distribution.
+// Summary returns the graph's headline totals and filetype and status-code
+// distributions.
 func (s *GraphService) Summary(ctx context.Context, auditID string) (*domain.GraphSummary, error) {
-	sum := &domain.GraphSummary{Filetypes: []domain.FiletypeCount{}}
+	sum := &domain.GraphSummary{
+		Filetypes: []domain.FiletypeCount{},
+		Statuses:  []domain.StatusCodeCount{},
+	}
 	if s == nil || s.db == nil {
 		return sum, nil
 	}
@@ -644,6 +645,23 @@ func (s *GraphService) Summary(ctx context.Context, auditID string) (*domain.Gra
 	}
 	for _, b := range buckets {
 		sum.Filetypes = append(sum.Filetypes, domain.FiletypeCount{Filetype: b.Filetype, Count: b.Count})
+	}
+
+	type statusBucket struct {
+		StatusCode int
+		Count      int
+	}
+	var statusBuckets []statusBucket
+	if err := db.Model(&store.GraphNode{}).
+		Select("status_code AS status_code, COUNT(*) AS count").
+		Where("audit_id = ?", auditID).
+		Group("status_code").
+		Order("count DESC").
+		Scan(&statusBuckets).Error; err != nil {
+		return nil, err
+	}
+	for _, b := range statusBuckets {
+		sum.Statuses = append(sum.Statuses, domain.StatusCodeCount{StatusCode: b.StatusCode, Count: b.Count})
 	}
 
 	sum.TotalNodes = int(nodeCount)

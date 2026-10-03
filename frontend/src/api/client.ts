@@ -259,8 +259,7 @@ export function listGraphNodes(
   if (query.firstSeenTo) params.set('first_seen_max', query.firstSeenTo)
   if (query.lastSeenFrom) params.set('last_seen_min', query.lastSeenFrom)
   if (query.lastSeenTo) params.set('last_seen_max', query.lastSeenTo)
-  if (query.statusMin !== undefined) params.set('status_min', String(query.statusMin))
-  if (query.statusMax !== undefined) params.set('status_max', String(query.statusMax))
+  if (query.statuses?.length) params.set('status', query.statuses.join(','))
   if (query.lastValidatedFrom) params.set('last_validated_min', query.lastValidatedFrom)
   if (query.lastValidatedTo) params.set('last_validated_max', query.lastValidatedTo)
 

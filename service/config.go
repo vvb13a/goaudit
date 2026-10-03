@@ -22,6 +22,17 @@ type Config struct {
 	// Defaults to a day so validation does not spam the internet.
 	LinkCacheTTLMin int `json:"link_cache_ttl_min"`
 
+	// Asset pacing. Static assets (stylesheets, scripts, images, fonts,
+	// media, data files) are normally served by a CDN or a static web server
+	// that can absorb far more parallel requests than an application server.
+	// During link validation these targets use their own delay and
+	// concurrency instead of the document-oriented RequestDelayMs and
+	// MaxConcurrency, so validation of a large asset graph is not throttled to
+	// document speed. Document-like targets (html and unknown/extensionless
+	// URLs) keep the document settings.
+	AssetRequestDelayMs int `json:"asset_request_delay_ms"`
+	AssetMaxConcurrency int `json:"asset_max_concurrency"`
+
 	// Workflow toggles. A run performs the enabled workflows; at least one
 	// must be on. Checks and the link graph are independent.
 	EnableChecks bool `json:"enable_checks"`
@@ -50,6 +61,9 @@ func DefaultConfig() *Config {
 		UserAgent:       "GoAuditEngine/1.0 (AuditBot; +https://example.com/bot)",
 		MaxSitemapDepth: 3,
 		LinkCacheTTLMin: 1440,
+
+		AssetRequestDelayMs: 0,
+		AssetMaxConcurrency: 20,
 
 		EnableChecks:         true,
 		EnableGraph:          false,
@@ -113,6 +127,12 @@ func (m *Manager) Load() error {
 		if _, ok := keys["enable_checks"]; !ok {
 			cfg.EnableChecks = true
 		}
+		if _, ok := keys["asset_request_delay_ms"]; !ok {
+			cfg.AssetRequestDelayMs = DefaultConfig().AssetRequestDelayMs
+		}
+		if _, ok := keys["asset_max_concurrency"]; !ok {
+			cfg.AssetMaxConcurrency = DefaultConfig().AssetMaxConcurrency
+		}
 	}
 	m.cfg = &cfg
 	return nil
@@ -138,6 +158,54 @@ func (m *Manager) saveInternal(cfg *Config) error {
 
 func (c *Config) RequestDelay() time.Duration {
 	return time.Duration(c.RequestDelayMs) * time.Millisecond
+}
+
+func (c *Config) AssetRequestDelay() time.Duration {
+	return time.Duration(c.AssetRequestDelayMs) * time.Millisecond
+}
+
+// RequestDelayFor returns the delay to apply before fetching a target of the
+// given filetype: assets use the asset setting, everything else the document
+// setting.
+func (c *Config) RequestDelayFor(filetype string) time.Duration {
+	if isStaticAssetFiletype(filetype) {
+		return c.AssetRequestDelay()
+	}
+	return c.RequestDelay()
+}
+
+// staticAssetFiletypes are the coarse filetypes served by a static host or CDN
+// and therefore safe to fetch with the faster asset pacing. It holds both the
+// canonical filetypes derived from URL extensions and the hint tokens the
+// extractor attaches to extensionless assets (image, media, vtt). html and
+// other (unknown or extensionless, often dynamic) keep the document pacing.
+var staticAssetFiletypes = map[string]struct{}{
+	"css":      {},
+	"js":       {},
+	"json":     {},
+	"xml":      {},
+	"txt":      {},
+	"pdf":      {},
+	"manifest": {},
+	"jpg":      {},
+	"png":      {},
+	"webp":     {},
+	"gif":      {},
+	"svg":      {},
+	"ico":      {},
+	"avif":     {},
+	"bmp":      {},
+	"font":     {},
+	"video":    {},
+	"audio":    {},
+	"image":    {},
+	"media":    {},
+	"vtt":      {},
+}
+
+func isStaticAssetFiletype(filetype string) bool {
+	_, ok := staticAssetFiletypes[strings.ToLower(filetype)]
+	return ok
 }
 
 func (c *Config) HTTPTimeout() time.Duration {
@@ -186,6 +254,12 @@ func MergeConfig(base Config, raw json.RawMessage) Config {
 	}
 	if v, ok := obj["link_cache_ttl_min"]; ok {
 		out.LinkCacheTTLMin = mergeInt(base.LinkCacheTTLMin, v, true)
+	}
+	if v, ok := obj["asset_request_delay_ms"]; ok {
+		out.AssetRequestDelayMs = mergeInt(base.AssetRequestDelayMs, v, false)
+	}
+	if v, ok := obj["asset_max_concurrency"]; ok {
+		out.AssetMaxConcurrency = mergeInt(base.AssetMaxConcurrency, v, true)
 	}
 	if v, ok := obj["enable_checks"]; ok {
 		if b, ok := v.(bool); ok {

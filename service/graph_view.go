@@ -21,15 +21,17 @@ func (v *graphView) Target(url string) (domain.TargetStatus, bool) {
 func (v *graphView) Sources() []string { return v.sources }
 
 // TargetURLs returns the distinct, normalized URLs of the run's link targets
-// that are not themselves audited pages (those already have a fetch status).
-func (s *GraphService) TargetURLs(a *domain.Audit) []string {
+// that are not themselves audited pages (those already have a fetch status),
+// each paired with the filetype hint from the referencing element so
+// validation can classify extensionless asset URLs.
+func (s *GraphService) TargetURLs(a *domain.Audit) []ValidationTarget {
 	audited := make(map[string]struct{}, len(a.Urls))
 	for _, u := range a.Urls {
 		audited[normalizeGraphURL(issueURL(u))] = struct{}{}
 	}
 
-	seen := make(map[string]struct{})
-	var urls []string
+	idx := make(map[string]int)
+	var targets []ValidationTarget
 	for _, u := range a.Urls {
 		if u == nil {
 			continue
@@ -39,14 +41,17 @@ func (s *GraphService) TargetURLs(a *domain.Audit) []string {
 			if _, ok := audited[target]; ok {
 				continue
 			}
-			if _, ok := seen[target]; ok {
+			if i, ok := idx[target]; ok {
+				if targets[i].Filetype == "" {
+					targets[i].Filetype = link.Filetype
+				}
 				continue
 			}
-			seen[target] = struct{}{}
-			urls = append(urls, target)
+			idx[target] = len(targets)
+			targets = append(targets, ValidationTarget{URL: target, Filetype: link.Filetype})
 		}
 	}
-	return urls
+	return targets
 }
 
 // BuildView builds the in-memory graph view the graph checks evaluate.

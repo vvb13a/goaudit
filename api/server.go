@@ -424,6 +424,10 @@ func validateConfig(c service.Config) error {
 		return invalidConfig("Max sitemap depth must be a positive integer")
 	case c.LinkCacheTTLMin <= 0:
 		return invalidConfig("Link cache TTL (min) must be a positive integer")
+	case c.AssetRequestDelayMs < 0:
+		return invalidConfig("Asset request delay (ms) must be an integer >= 0")
+	case c.AssetMaxConcurrency <= 0:
+		return invalidConfig("Asset max concurrency must be a positive integer")
 	case strings.TrimSpace(c.UserAgent) == "":
 		return invalidConfig("User agent must not be empty")
 	case !c.EnableChecks && !c.EnableGraph:

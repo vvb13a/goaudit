@@ -12,6 +12,15 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// ValidationTarget is a link target to validate together with the filetype
+// hint from the referencing element. The hint classifies extensionless CDN
+// URLs (e.g. a script loaded from /static/app) so validation can pace assets
+// differently from documents.
+type ValidationTarget struct {
+	URL      string
+	Filetype string
+}
+
 // LinkValidator validates the graph's target nodes in bulk and stores the
 // results in the global link_targets table. A target is only fetched when its
 // stored result is missing or older than the configured TTL, so repeated runs
@@ -28,22 +37,26 @@ func NewLinkValidator(db *gorm.DB) *LinkValidator {
 // result is still fresh, and upserts the results into the global link_targets
 // table. It returns the resulting status keyed by URL (fresh, reused or
 // previously stored) so the caller can run graph checks without re-reading.
-func (v *LinkValidator) Validate(ctx context.Context, cfg Config, urls []string, onProgress func(completed, total int)) (map[string]store.LinkTarget, error) {
+func (v *LinkValidator) Validate(ctx context.Context, cfg Config, targets []ValidationTarget, onProgress func(completed, total int)) (map[string]store.LinkTarget, error) {
 	statuses := make(map[string]store.LinkTarget)
-	if v == nil || v.db == nil || len(urls) == 0 {
+	if v == nil || v.db == nil || len(targets) == 0 {
 		if onProgress != nil {
 			onProgress(0, 0)
 		}
 		return statuses, nil
 	}
 
-	unique := dedupeStrings(urls)
+	unique := dedupeTargets(targets)
+	uniqueURLs := make([]string, len(unique))
+	for i := range unique {
+		uniqueURLs[i] = unique[i].URL
+	}
 	now := time.Now().UTC()
 	ttl := cfg.LinkCacheTTL()
 
 	fresh := make(map[string]struct{})
 	if ttl > 0 {
-		for _, chunk := range chunkStrings(unique, 400) {
+		for _, chunk := range chunkStrings(uniqueURLs, 400) {
 			var freshURLs []string
 			if err := v.db.WithContext(ctx).Model(&store.LinkTarget{}).
 				Where("url IN ? AND expires_at > ?", chunk, now).
@@ -56,10 +69,10 @@ func (v *LinkValidator) Validate(ctx context.Context, cfg Config, urls []string,
 		}
 	}
 
-	pending := make([]string, 0, len(unique))
-	for _, u := range unique {
-		if _, ok := fresh[u]; !ok {
-			pending = append(pending, u)
+	pending := make([]ValidationTarget, 0, len(unique))
+	for _, t := range unique {
+		if _, ok := fresh[t.URL]; !ok {
+			pending = append(pending, t)
 		}
 	}
 
@@ -67,17 +80,17 @@ func (v *LinkValidator) Validate(ctx context.Context, cfg Config, urls []string,
 	// another audit) is validated already: reuse its stored status instead of
 	// re-fetching the document, and seed it into link_targets so it is shared.
 	if len(pending) > 0 && ttl > 0 {
-		reused, err := v.reuseAudited(ctx, pending, ttl, now)
+		reused, err := v.reuseAudited(ctx, targetURLs(pending), ttl, now)
 		if err != nil {
 			return nil, err
 		}
 		if len(reused) > 0 {
-			remaining := make([]string, 0, len(pending))
-			for _, u := range pending {
-				if _, ok := reused[u]; ok {
+			remaining := make([]ValidationTarget, 0, len(pending))
+			for _, t := range pending {
+				if _, ok := reused[t.URL]; ok {
 					continue
 				}
-				remaining = append(remaining, u)
+				remaining = append(remaining, t)
 			}
 			pending = remaining
 		}
@@ -99,15 +112,21 @@ func (v *LinkValidator) Validate(ctx context.Context, cfg Config, urls []string,
 			},
 		}
 
-		concurrency := cfg.MaxConcurrency
-		if concurrency <= 0 {
-			concurrency = 5
+		// Assets and documents are paced independently so a large asset graph
+		// does not throttle, and is not throttled by, the document targets.
+		docConcurrency := cfg.MaxConcurrency
+		if docConcurrency <= 0 {
+			docConcurrency = 5
 		}
-		delay := cfg.RequestDelay()
+		assetConcurrency := cfg.AssetMaxConcurrency
+		if assetConcurrency <= 0 {
+			assetConcurrency = 20
+		}
+		docSem := make(chan struct{}, docConcurrency)
+		assetSem := make(chan struct{}, assetConcurrency)
 
 		var (
 			wg        sync.WaitGroup
-			sem       = make(chan struct{}, concurrency)
 			mu        sync.Mutex
 			completed int
 			writeErr  error
@@ -117,9 +136,15 @@ func (v *LinkValidator) Validate(ctx context.Context, cfg Config, urls []string,
 			if ctx.Err() != nil {
 				break
 			}
+			filetype := detectFiletype(target.URL, target.Filetype)
+			sem := docSem
+			delay := cfg.RequestDelayFor(filetype)
+			if isStaticAssetFiletype(filetype) {
+				sem = assetSem
+			}
 			wg.Add(1)
 			sem <- struct{}{}
-			go func(u string) {
+			go func(u string, sem chan struct{}, delay time.Duration) {
 				defer wg.Done()
 				defer func() { <-sem }()
 				if delay > 0 {
@@ -139,7 +164,7 @@ func (v *LinkValidator) Validate(ctx context.Context, cfg Config, urls []string,
 				if onProgress != nil {
 					onProgress(completed, total)
 				}
-			}(target)
+			}(target.URL, sem, delay)
 		}
 		wg.Wait()
 
@@ -149,7 +174,7 @@ func (v *LinkValidator) Validate(ctx context.Context, cfg Config, urls []string,
 	}
 
 	// Load every result (fetched, reused or pre-existing) for the caller.
-	for _, chunk := range chunkStrings(unique, 400) {
+	for _, chunk := range chunkStrings(uniqueURLs, 400) {
 		var rows []store.LinkTarget
 		if err := v.db.WithContext(ctx).Where("url IN ?", chunk).Find(&rows).Error; err != nil {
 			return nil, err
@@ -161,18 +186,35 @@ func (v *LinkValidator) Validate(ctx context.Context, cfg Config, urls []string,
 	return statuses, ctx.Err()
 }
 
-// dedupeStrings returns the URLs with duplicates removed, preserving order.
-func dedupeStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	out := make([]string, 0, len(values))
-	for _, v := range values {
-		if _, ok := seen[v]; ok {
+// dedupeTargets returns the targets with duplicate URLs removed, preserving
+// order. When a duplicate carries a filetype hint the first one lacks, the
+// hint is filled in.
+func dedupeTargets(targets []ValidationTarget) []ValidationTarget {
+	idx := make(map[string]int, len(targets))
+	out := make([]ValidationTarget, 0, len(targets))
+	for _, t := range targets {
+		if t.URL == "" {
 			continue
 		}
-		seen[v] = struct{}{}
-		out = append(out, v)
+		if i, ok := idx[t.URL]; ok {
+			if out[i].Filetype == "" {
+				out[i].Filetype = t.Filetype
+			}
+			continue
+		}
+		idx[t.URL] = len(out)
+		out = append(out, t)
 	}
 	return out
+}
+
+// targetURLs extracts the URLs of the given targets, preserving order.
+func targetURLs(targets []ValidationTarget) []string {
+	urls := make([]string, len(targets))
+	for i := range targets {
+		urls[i] = targets[i].URL
+	}
+	return urls
 }
 
 // chunkStrings splits values into slices of at most size.

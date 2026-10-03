@@ -93,6 +93,8 @@ export interface EngineConfig {
   user_agent: string
   max_sitemap_depth: number
   link_cache_ttl_min: number
+  asset_request_delay_ms: number
+  asset_max_concurrency: number
   enable_checks: boolean
   enable_graph: boolean
   enable_link_validation: boolean
@@ -229,12 +231,18 @@ export interface FiletypeCount {
   count: number
 }
 
+export interface StatusCodeCount {
+  status_code: number
+  count: number
+}
+
 export interface GraphSummary {
   total_nodes: number
   total_edges: number
   external_nodes: number
   root_nodes: number
   filetypes: FiletypeCount[]
+  statuses: StatusCodeCount[]
 }
 
 export interface GraphSnapshot {
@@ -279,8 +287,7 @@ export interface GraphNodeQuery {
   firstSeenTo?: string
   lastSeenFrom?: string
   lastSeenTo?: string
-  statusMin?: number
-  statusMax?: number
+  statuses?: number[]
   lastValidatedFrom?: string
   lastValidatedTo?: string
 }

@@ -45,6 +45,8 @@ var cfgFields = []cfgField{
 	{title: "HTTP timeout (s)", positive: true},
 	{title: "Max sitemap depth", positive: true},
 	{title: "Link cache TTL (min)", positive: true},
+	{title: "Asset request delay (ms)", positive: false},
+	{title: "Asset max concurrency", positive: true},
 	{title: "User agent"},
 }
 
@@ -363,6 +365,8 @@ func (m *AuditConfigModel) applyConfig(cfg service.Config) {
 		strconv.Itoa(cfg.HTTPTimeoutSec),
 		strconv.Itoa(cfg.MaxSitemapDepth),
 		strconv.Itoa(cfg.LinkCacheTTLMin),
+		strconv.Itoa(cfg.AssetRequestDelayMs),
+		strconv.Itoa(cfg.AssetMaxConcurrency),
 		cfg.UserAgent,
 	}
 	for i, v := range values {
@@ -436,8 +440,18 @@ func (m AuditConfigModel) readConfig() (service.Config, string) {
 	} else {
 		cfg.LinkCacheTTLMin = n
 	}
+	if n, ok := parseInt(5); !ok || n < 0 {
+		return cfg, cfgFields[5].title + " must be an integer >= 0"
+	} else {
+		cfg.AssetRequestDelayMs = n
+	}
+	if n, ok := parseInt(6); !ok || n <= 0 {
+		return cfg, cfgFields[6].title + " must be a positive integer"
+	} else {
+		cfg.AssetMaxConcurrency = n
+	}
 
-	ua := strings.TrimSpace(m.cfgInputs[5].Value())
+	ua := strings.TrimSpace(m.cfgInputs[7].Value())
 	if ua == "" {
 		return cfg, "User agent must not be empty"
 	}

@@ -13,6 +13,8 @@ export function defaultAuditConfig(): AuditConfig {
       user_agent: 'GoAuditEngine/1.0 (AuditBot; +https://example.com/bot)',
       max_sitemap_depth: 3,
       link_cache_ttl_min: 1440,
+      asset_request_delay_ms: 0,
+      asset_max_concurrency: 20,
       enable_checks: true,
       enable_graph: false,
       enable_link_validation: false,
@@ -53,6 +55,8 @@ export function validateAuditConfig(cfg: AuditConfig): string | null {
   if (c.http_timeout_sec <= 0) return 'HTTP timeout (s) must be a positive integer'
   if (c.max_sitemap_depth <= 0) return 'Max sitemap depth must be a positive integer'
   if (c.link_cache_ttl_min <= 0) return 'Link cache TTL (min) must be a positive integer'
+  if (c.asset_request_delay_ms < 0) return 'Asset request delay (ms) must be an integer >= 0'
+  if (c.asset_max_concurrency <= 0) return 'Asset max concurrency must be a positive integer'
   if (!c.user_agent.trim()) return 'User agent must not be empty'
   const webhook = c.slack_webhook_url.trim()
   if (c.notifications_enabled && !webhook) {
