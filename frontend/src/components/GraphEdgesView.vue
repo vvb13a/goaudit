@@ -20,8 +20,10 @@ import * as api from '../api/client'
 import { dataVersion } from '../lib/appState'
 import { filetypeClass } from '../lib/graph'
 import { useDelayedLoading } from '../lib/loading'
+import { useColumnLayout } from '../lib/columnLayout'
 import { useTableQuery } from '../lib/tableQuery'
-import type { GraphEdgeRow } from '../types'
+import type { ContainerCount, GraphEdgeRow, RoleCount } from '../types'
+import ColumnToggle from './ColumnToggle.vue'
 import EmptyState from './EmptyState.vue'
 
 const props = defineProps<{ auditId: string }>()
@@ -66,6 +68,8 @@ const menuItems = computed(() => [
 
 const items = ref<GraphEdgeRow[]>([])
 const total = ref(0)
+const containers = ref<ContainerCount[]>([])
+const roles = ref<RoleCount[]>([])
 const loading = ref(false)
 const showTableLoading = useDelayedLoading(loading)
 const error = ref<string | null>(null)
@@ -86,6 +90,8 @@ function defaultFilters(): Record<string, ColumnFilter> {
   return {
     source: { value: null, matchMode: 'contains' },
     type: { value: null, matchMode: 'in' },
+    container: { value: null, matchMode: 'in' },
+    role: { value: null, matchMode: 'in' },
     target: { value: null, matchMode: 'contains' },
   }
 }
@@ -105,6 +111,35 @@ const edgeTypeOptions = [
   'manifest',
   'preload',
 ].map((t) => ({ label: t, value: t }))
+
+const containerOptions = computed(() =>
+  containers.value.map((c) => ({
+    label: `${c.container || '–'} (${c.count.toLocaleString()})`,
+    value: c.container,
+  })),
+)
+
+const roleOptions = computed(() =>
+  roles.value.map((r) => ({
+    label: `${r.role || '–'} (${r.count.toLocaleString()})`,
+    value: r.role,
+  })),
+)
+
+const {
+  labels: columnLabels,
+  columnOrder,
+  visibleFields,
+  visibleOrderedFields,
+  columnsKey,
+  reset: resetColumns,
+} = useColumnLayout('graph-edges', [
+  { field: 'source', label: 'Source' },
+  { field: 'type', label: 'Type' },
+  { field: 'container', label: 'Container' },
+  { field: 'role', label: 'Role' },
+  { field: 'target', label: 'Target' },
+])
 
 let requestId = 0
 let filterTimer: ReturnType<typeof setTimeout> | undefined
@@ -148,6 +183,11 @@ function applyQuery(query: LocationQuery): void {
   filters.value = {
     source: { value: single('source'), matchMode: 'contains' },
     type: { value: list('type').length ? list('type') : null, matchMode: 'in' },
+    container: {
+      value: list('container').length ? list('container') : null,
+      matchMode: 'in',
+    },
+    role: { value: list('role').length ? list('role') : null, matchMode: 'in' },
     target: { value: single('target'), matchMode: 'contains' },
   }
   sortField.value = single('sort') ?? undefined
@@ -162,6 +202,10 @@ function serializeQuery(): Record<string, string> {
   if (source) query.source = source
   const types = selectedValues('type')
   if (types.length) query.type = types.join(',')
+  const containers = selectedValues('container')
+  if (containers.length) query.container = containers.join(',')
+  const roles = selectedValues('role')
+  if (roles.length) query.role = roles.join(',')
   const target = textValue('target')
   if (target) query.target = target
   if (sortField.value) query.sort = sortField.value
@@ -178,16 +222,23 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = null
   try {
-    const data = await api.listGraphEdges(id, {
-      page: Math.floor(first.value / rows.value) + 1,
-      limit: rows.value,
-      sort: sortField.value,
-      order: currentOrder(),
-      types: selectedValues('type'),
-      source: textValue('source'),
-      target: textValue('target'),
-    })
+    const [summary, data] = await Promise.all([
+      api.getGraphSummary(id),
+      api.listGraphEdges(id, {
+        page: Math.floor(first.value / rows.value) + 1,
+        limit: rows.value,
+        sort: sortField.value,
+        order: currentOrder(),
+        types: selectedValues('type'),
+        containers: selectedValues('container'),
+        roles: selectedValues('role'),
+        source: textValue('source'),
+        target: textValue('target'),
+      }),
+    ])
     if (request !== requestId) return
+    containers.value = summary.containers
+    roles.value = summary.roles
     items.value = data.items
     total.value = data.total
   } catch (e) {
@@ -198,7 +249,7 @@ async function load(): Promise<void> {
 }
 
 const { sync } = useTableQuery({
-  keys: ['source', 'type', 'target', 'sort', 'order', 'page'],
+  keys: ['source', 'type', 'container', 'role', 'target', 'sort', 'order', 'page'],
   apply: applyQuery,
   load,
   serialize: serializeQuery,
@@ -282,6 +333,7 @@ watch(dataVersion, () => {
     <Message v-if="error" severity="error">{{ error }}</Message>
 
     <DataTable
+      :key="columnsKey"
       v-model:filters="filters"
       v-model:first="first"
       v-model:rows="rows"
@@ -312,6 +364,12 @@ watch(dataVersion, () => {
           <Button label="Clear" text size="small" @click="resetFilters">
             <template #icon><FilterSlash :size="16" /></template>
           </Button>
+          <ColumnToggle
+            v-model:order="columnOrder"
+            v-model:visible="visibleFields"
+            :labels="columnLabels"
+            @reset="resetColumns"
+          />
           <Button
             label="Refresh"
             text
@@ -337,7 +395,9 @@ watch(dataVersion, () => {
         <EmptyState v-if="!loading" @reset="resetFilters" />
       </template>
 
+      <template v-for="field in visibleOrderedFields" :key="field">
       <Column
+        v-if="field === 'source'"
         field="source"
         header="Source"
         sortable
@@ -376,6 +436,7 @@ watch(dataVersion, () => {
       </Column>
 
       <Column
+        v-else-if="field === 'type'"
         field="type"
         header="Type"
         sortable
@@ -402,6 +463,61 @@ watch(dataVersion, () => {
       </Column>
 
       <Column
+        v-else-if="field === 'container'"
+        field="container"
+        header="Container"
+        sortable
+        filter-match-mode="in"
+        :show-filter-match-modes="false"
+        :filter-menu-style="{ minWidth: '14rem' }"
+        style="min-width: 7rem"
+      >
+        <template #body="{ data }">
+          <span class="text-sm capitalize">{{ data.container || '–' }}</span>
+        </template>
+        <template #filter="{ filterModel, filterCallback }">
+          <MultiSelect
+            v-model="filterModel.value"
+            :options="containerOptions"
+            option-label="label"
+            option-value="value"
+            placeholder="Any"
+            :show-clear="true"
+            class="w-full"
+            @change="filterCallback()"
+          />
+        </template>
+      </Column>
+
+      <Column
+        v-else-if="field === 'role'"
+        field="role"
+        header="Role"
+        sortable
+        filter-match-mode="in"
+        :show-filter-match-modes="false"
+        :filter-menu-style="{ minWidth: '14rem' }"
+        style="min-width: 7rem"
+      >
+        <template #body="{ data }">
+          <span class="text-sm capitalize">{{ data.role || '–' }}</span>
+        </template>
+        <template #filter="{ filterModel, filterCallback }">
+          <MultiSelect
+            v-model="filterModel.value"
+            :options="roleOptions"
+            option-label="label"
+            option-value="value"
+            placeholder="Any"
+            :show-clear="true"
+            class="w-full"
+            @change="filterCallback()"
+          />
+        </template>
+      </Column>
+
+      <Column
+        v-else-if="field === 'target'"
         field="target"
         header="Target"
         sortable
@@ -444,6 +560,7 @@ watch(dataVersion, () => {
           />
         </template>
       </Column>
+      </template>
     </DataTable>
 
     <ContextMenu ref="menu" :model="menuItems" @hide="menuEdge = null" />

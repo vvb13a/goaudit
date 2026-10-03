@@ -35,6 +35,80 @@ func TestIsJunkLink(t *testing.T) {
 	}
 }
 
+func TestExtractClassifiesContainerAndRole(t *testing.T) {
+	body := `<html><head>` +
+		`<link rel="stylesheet" href="/style.css">` +
+		`</head><body>` +
+		`<header><nav><a href="/nav">Nav</a></nav></header>` +
+		`<main>` +
+		`<a href="/content">Content</a>` +
+		`<a href="/injected" data-audit-role="injected">Injected</a>` +
+		`<a href="/same">Header</a>` +
+		`<article><footer><a href="/article-footer">Article footer</a></footer></article>` +
+		`</main>` +
+		`<footer><a href="/footer">Footer</a></footer>` +
+		`</body></html>`
+
+	doc := &domain.Document{
+		URL:      "https://example.com/page",
+		FinalURL: "https://example.com/page",
+		Headers:  http.Header{"Content-Type": []string{"text/html"}},
+		Body:     []byte(body),
+	}
+
+	links := NewGraphService(nil).Extract(doc)
+	byURL := make(map[string]domain.RawLink, len(links))
+	for _, l := range links {
+		byURL[strings.TrimPrefix(l.URL, "https://example.com")] = l
+	}
+
+	cases := []struct {
+		path, linkType, container, role string
+	}{
+		{"/style.css", "stylesheet", "head", "resource"},
+		{"/nav", "hyperlink", "header", "nav"},
+		{"/content", "hyperlink", "body", "content"},
+		{"/injected", "hyperlink", "body", "injected"},
+		{"/article-footer", "hyperlink", "body", "content"},
+		{"/footer", "hyperlink", "footer", "nav"},
+	}
+	for _, c := range cases {
+		got, ok := byURL[c.path]
+		if !ok {
+			t.Errorf("expected %q to be extracted", c.path)
+			continue
+		}
+		if got.Type != c.linkType || got.Container != c.container || got.Role != c.role {
+			t.Errorf("%q = type %q container %q role %q, want %q %q %q",
+				c.path, got.Type, got.Container, got.Role, c.linkType, c.container, c.role)
+		}
+	}
+}
+
+func TestExtractSplitsByContainer(t *testing.T) {
+	body := `<html><body>` +
+		`<header><a href="/same">Header</a></header>` +
+		`<main><a href="/same">Body</a></main>` +
+		`</body></html>`
+
+	doc := &domain.Document{
+		URL:      "https://example.com/page",
+		FinalURL: "https://example.com/page",
+		Headers:  http.Header{"Content-Type": []string{"text/html"}},
+		Body:     []byte(body),
+	}
+
+	var containers []string
+	for _, l := range NewGraphService(nil).Extract(doc) {
+		if l.URL == "https://example.com/same" {
+			containers = append(containers, l.Container)
+		}
+	}
+	if len(containers) != 2 {
+		t.Fatalf("expected the same link in two containers, got %v", containers)
+	}
+}
+
 func TestExtractFiltersSrcsetDataURI(t *testing.T) {
 	body := `<html><body>` +
 		`<img src="https://example.com/photo.jpg" srcset="` +

@@ -159,6 +159,8 @@ export interface IssueFilters {
 export interface UrlRow {
   url: string
   final_url: string
+  title: string
+  edit_url: string
   status_code: number
   duration_ms: number
   state: string
@@ -216,6 +218,8 @@ export interface GraphNode {
 export interface GraphEdgeRow {
   id: string
   type: string
+  container: string
+  role: string
   count: number
   source_node_id: string
   source_url: string
@@ -236,6 +240,16 @@ export interface StatusCodeCount {
   count: number
 }
 
+export interface ContainerCount {
+  container: string
+  count: number
+}
+
+export interface RoleCount {
+  role: string
+  count: number
+}
+
 export interface GraphSummary {
   total_nodes: number
   total_edges: number
@@ -243,6 +257,8 @@ export interface GraphSummary {
   root_nodes: number
   filetypes: FiletypeCount[]
   statuses: StatusCodeCount[]
+  containers: ContainerCount[]
+  roles: RoleCount[]
 }
 
 export interface GraphSnapshot {
@@ -298,6 +314,8 @@ export interface GraphEdgeQuery {
   sort?: string
   order?: 'asc' | 'desc'
   types?: string[]
+  containers?: string[]
+  roles?: string[]
   sourceId?: string
   targetId?: string
   source?: string

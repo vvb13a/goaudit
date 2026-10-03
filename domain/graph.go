@@ -35,24 +35,31 @@ type GraphNode struct {
 }
 
 // GraphEdge is a directed reference from a source node to a target node. Type
-// is the reference kind (hyperlink, stylesheet, script, image, ...); Count
-// aggregates repeated references of the same kind between the same pair.
+// is the reference kind (hyperlink, stylesheet, script, image, ...). Container
+// is the document region the reference sits in (head, header, body, footer) and
+// Role is its purpose (global, nav, content, resource, or a site-provided
+// override). Count aggregates repeated references with the same identity.
 type GraphEdge struct {
 	ID           string `json:"id"`
 	SourceNodeID string `json:"source_node_id"`
 	TargetNodeID string `json:"target_node_id"`
 	Type         string `json:"type"`
+	Container    string `json:"container"`
+	Role         string `json:"role"`
 	Count        int    `json:"count"`
 }
 
 // RawLink is one outbound reference extracted from a fetched document before
 // it is resolved into nodes and edges. URL is already absolute and
 // fragment-free; Filetype is the hint from the referencing element, used when
-// the target URL has no recognizable extension.
+// the target URL has no recognizable extension. Container/Role classify where
+// the reference sits and what it is for.
 type RawLink struct {
-	URL      string `json:"url"`
-	Type     string `json:"type"`
-	Filetype string `json:"filetype"`
+	URL       string `json:"url"`
+	Type      string `json:"type"`
+	Filetype  string `json:"filetype"`
+	Container string `json:"container"`
+	Role      string `json:"role"`
 }
 
 // GraphEdgeRow is a denormalized edge for display: the edge plus the source and
@@ -60,6 +67,8 @@ type RawLink struct {
 type GraphEdgeRow struct {
 	ID             string `json:"id"`
 	Type           string `json:"type"`
+	Container      string `json:"container"`
+	Role           string `json:"role"`
 	Count          int    `json:"count"`
 	SourceNodeID   string `json:"source_node_id"`
 	SourceURL      string `json:"source_url"`
@@ -93,6 +102,8 @@ type GraphNodeFilter struct {
 // TargetContains search the endpoint URLs (used by the column filters).
 type GraphEdgeFilter struct {
 	Types          []string
+	Containers     []string
+	Roles          []string
 	SourceNodeID   string
 	TargetNodeID   string
 	SourceContains string
@@ -114,6 +125,20 @@ type StatusCodeCount struct {
 	Count      int `json:"count"`
 }
 
+// ContainerCount is one bucket of the graph's edge-container distribution
+// (head, header, body, footer).
+type ContainerCount struct {
+	Container string `json:"container"`
+	Count     int    `json:"count"`
+}
+
+// RoleCount is one bucket of the graph's edge-role distribution (global, nav,
+// content, resource, or a site-provided override).
+type RoleCount struct {
+	Role  string `json:"role"`
+	Count int    `json:"count"`
+}
+
 // GraphSummary is the headline of an audit's graph.
 type GraphSummary struct {
 	TotalNodes    int               `json:"total_nodes"`
@@ -122,4 +147,6 @@ type GraphSummary struct {
 	RootNodes     int               `json:"root_nodes"`
 	Filetypes     []FiletypeCount   `json:"filetypes"`
 	Statuses      []StatusCodeCount `json:"statuses"`
+	Containers    []ContainerCount  `json:"containers"`
+	Roles         []RoleCount       `json:"roles"`
 }

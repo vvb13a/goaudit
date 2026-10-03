@@ -21,11 +21,14 @@ type CheckInfo struct {
 }
 
 // LinkRef is one reference from an audited page to a target URL, as seen by a
-// graph check.
+// graph check. Container is the document region the reference sits in and Role
+// is its purpose (including any site-provided override).
 type LinkRef struct {
 	SourceURL string
 	TargetURL string
 	Type      string
+	Container string
+	Role      string
 }
 
 // TargetStatus is the validation state of a link target: its classification

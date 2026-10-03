@@ -278,6 +278,8 @@ export function listGraphEdges(
   if (query.sort) params.set('sort', query.sort)
   if (query.order) params.set('order', query.order)
   if (query.types?.length) params.set('type', query.types.join(','))
+  if (query.containers?.length) params.set('container', query.containers.join(','))
+  if (query.roles?.length) params.set('role', query.roles.join(','))
   if (query.sourceId) params.set('source_id', query.sourceId)
   if (query.targetId) params.set('target_id', query.targetId)
   if (query.source) params.set('source', query.source)

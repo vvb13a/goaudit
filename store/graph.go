@@ -76,33 +76,37 @@ func (m *GraphNode) ToDomain() *domain.GraphNode {
 }
 
 // GraphEdge mirrors the "graph_edges" table. Edges reference nodes by id; the
-// unique index keeps one row per (audit, source, target, type) with a count of
-// the repeated references.
+// unique index keeps one row per (audit, source, target, type, container, role)
+// with a count of the repeated references.
 type GraphEdge struct {
 	ID           string `gorm:"column:id;primaryKey;type:text"`
 	AuditID      string `gorm:"column:audit_id;type:text;not null;index:idx_graph_edges_audit_id;uniqueIndex:idx_graph_edges_unique"`
 	SourceNodeID string `gorm:"column:source_node_id;type:text;not null;index:idx_graph_edges_source;uniqueIndex:idx_graph_edges_unique"`
 	TargetNodeID string `gorm:"column:target_node_id;type:text;not null;index:idx_graph_edges_target;uniqueIndex:idx_graph_edges_unique"`
 	Type         string `gorm:"column:edge_type;type:text;not null;index:idx_graph_edges_type;uniqueIndex:idx_graph_edges_unique"`
+	Container    string `gorm:"column:container;type:text;not null;default:'';index:idx_graph_edges_container;uniqueIndex:idx_graph_edges_unique"`
+	Role         string `gorm:"column:role;type:text;not null;default:'';index:idx_graph_edges_role;uniqueIndex:idx_graph_edges_unique"`
 	Count        int    `gorm:"column:count;not null;default:1"`
 }
 
 func (GraphEdge) TableName() string { return "graph_edges" }
 
 // GraphEdgeID derives the deterministic row id of an edge from its unique
-// (audit, source, target, type) combination.
-func GraphEdgeID(auditID, sourceID, targetID, edgeType string) string {
-	sum := sha256.Sum256([]byte(auditID + "\x00" + sourceID + "\x00" + targetID + "\x00" + edgeType))
+// (audit, source, target, type, container, role) combination.
+func GraphEdgeID(auditID, sourceID, targetID, edgeType, container, role string) string {
+	sum := sha256.Sum256([]byte(auditID + "\x00" + sourceID + "\x00" + targetID + "\x00" + edgeType + "\x00" + container + "\x00" + role))
 	return "ge_" + hex.EncodeToString(sum[:16])
 }
 
 func GraphEdgeModel(auditID string, e *domain.GraphEdge) *GraphEdge {
 	return &GraphEdge{
-		ID:           GraphEdgeID(auditID, e.SourceNodeID, e.TargetNodeID, e.Type),
+		ID:           GraphEdgeID(auditID, e.SourceNodeID, e.TargetNodeID, e.Type, e.Container, e.Role),
 		AuditID:      auditID,
 		SourceNodeID: e.SourceNodeID,
 		TargetNodeID: e.TargetNodeID,
 		Type:         e.Type,
+		Container:    e.Container,
+		Role:         e.Role,
 		Count:        e.Count,
 	}
 }
@@ -113,6 +117,8 @@ func (m *GraphEdge) ToDomain() *domain.GraphEdge {
 		SourceNodeID: m.SourceNodeID,
 		TargetNodeID: m.TargetNodeID,
 		Type:         m.Type,
+		Container:    m.Container,
+		Role:         m.Role,
 		Count:        m.Count,
 	}
 }
@@ -122,6 +128,8 @@ func (m *GraphEdge) ToDomain() *domain.GraphEdge {
 type GraphEdgeRow struct {
 	ID             string `gorm:"column:id"`
 	Type           string `gorm:"column:type"`
+	Container      string `gorm:"column:container"`
+	Role           string `gorm:"column:role"`
 	Count          int    `gorm:"column:count"`
 	SourceNodeID   string `gorm:"column:source_node_id"`
 	SourceURL      string `gorm:"column:source_url"`
@@ -136,6 +144,8 @@ func (m *GraphEdgeRow) ToDomain() *domain.GraphEdgeRow {
 	return &domain.GraphEdgeRow{
 		ID:             m.ID,
 		Type:           m.Type,
+		Container:      m.Container,
+		Role:           m.Role,
 		Count:          m.Count,
 		SourceNodeID:   m.SourceNodeID,
 		SourceURL:      m.SourceURL,

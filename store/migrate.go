@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"strings"
 
 	"gorm.io/gorm"
 )
@@ -74,6 +75,30 @@ func migrateGraphNodeValidation(db *gorm.DB) error {
 			WHERE a.audit_id = graph_nodes.audit_id
 			  AND (a.final_url = graph_nodes.url OR a.url = graph_nodes.url))
 	`).Error
+}
+
+// migrateGraphEdgeContext rebuilds the graph_edges unique index to include the
+// container and role columns, which were added after the table already existed.
+// GORM AutoMigrate adds the columns but leaves the old index in place, so an
+// edge linking the same pair from two containers would collide. The migration
+// is a no-op once the index already covers the new columns; edges are rebuilt
+// on the next run, so their stale rows are left untouched.
+func migrateGraphEdgeContext(db *gorm.DB) error {
+	var rows []struct{ SQL string }
+	if err := db.Raw("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?", "idx_graph_edges_unique").
+		Scan(&rows).Error; err != nil {
+		return err
+	}
+	if len(rows) == 0 || strings.Contains(rows[0].SQL, "container") {
+		return nil
+	}
+	if err := db.Exec("DROP INDEX idx_graph_edges_unique").Error; err != nil {
+		return err
+	}
+	return db.Exec(
+		"CREATE UNIQUE INDEX idx_graph_edges_unique ON graph_edges " +
+			"(audit_id, source_node_id, target_node_id, edge_type, container, role)",
+	).Error
 }
 
 // migrateJunkGraphNodes removes graph nodes whose URL is markup that leaked out

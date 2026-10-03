@@ -100,6 +100,8 @@ func (s *Server) handleGraphEdges(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	filter := domain.GraphEdgeFilter{
 		Types:          splitCSV(q.Get("type")),
+		Containers:     splitCSV(q.Get("container")),
+		Roles:          splitCSV(q.Get("role")),
 		SourceNodeID:   strings.TrimSpace(q.Get("source_id")),
 		TargetNodeID:   strings.TrimSpace(q.Get("target_id")),
 		SourceContains: strings.TrimSpace(q.Get("source")),

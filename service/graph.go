@@ -90,7 +90,7 @@ func (s *GraphService) Extract(doc *domain.Document) []domain.RawLink {
 	seen := make(map[string]struct{})
 	var links []domain.RawLink
 
-	add := func(raw, linkType, filetypeHint string) {
+	add := func(n *html.Node, raw, linkType, filetypeHint string) {
 		if linkType == "" {
 			return
 		}
@@ -98,15 +98,22 @@ func (s *GraphService) Extract(doc *domain.Document) []domain.RawLink {
 		if !ok {
 			return
 		}
-		key := linkType + "\x00" + target
+		container := classifyContainer(n)
+		role := classifyRole(n, container, linkType)
+		if override := strings.ToLower(attr(n, linkRoleAttr)); override != "" {
+			role = override
+		}
+		key := linkType + "\x00" + target + "\x00" + container + "\x00" + role
 		if _, dup := seen[key]; dup {
 			return
 		}
 		seen[key] = struct{}{}
 		links = append(links, domain.RawLink{
-			URL:      target,
-			Type:     linkType,
-			Filetype: detectFiletype(target, filetypeHint),
+			URL:       target,
+			Type:      linkType,
+			Filetype:  detectFiletype(target, filetypeHint),
+			Container: container,
+			Role:      role,
 		})
 	}
 
@@ -115,39 +122,39 @@ func (s *GraphService) Extract(doc *domain.Document) []domain.RawLink {
 		if n.Type == html.ElementNode {
 			switch strings.ToLower(n.Data) {
 			case "a":
-				add(attr(n, "href"), "hyperlink", "html")
+				add(n, attr(n, "href"), "hyperlink", "html")
 			case "link":
 				rel := strings.ToLower(attr(n, "rel"))
 				switch {
 				case strings.Contains(rel, "stylesheet"):
-					add(attr(n, "href"), "stylesheet", "css")
+					add(n, attr(n, "href"), "stylesheet", "css")
 				case strings.Contains(rel, "icon"):
-					add(attr(n, "href"), "icon", "ico")
+					add(n, attr(n, "href"), "icon", "ico")
 				case strings.Contains(rel, "manifest"):
-					add(attr(n, "href"), "manifest", "manifest")
+					add(n, attr(n, "href"), "manifest", "manifest")
 				case strings.Contains(rel, "preload"), strings.Contains(rel, "modulepreload"):
-					add(attr(n, "href"), "preload", "")
+					add(n, attr(n, "href"), "preload", "")
 				}
 			case "script":
-				add(attr(n, "src"), "script", "js")
+				add(n, attr(n, "src"), "script", "js")
 			case "img":
-				add(attr(n, "src"), "image", "image")
-				addSrcset(attr(n, "srcset"), add)
+				add(n, attr(n, "src"), "image", "image")
+				addSrcset(n, attr(n, "srcset"), add)
 			case "source":
-				add(attr(n, "src"), "source", "media")
-				addSrcset(attr(n, "srcset"), add)
+				add(n, attr(n, "src"), "source", "media")
+				addSrcset(n, attr(n, "srcset"), add)
 			case "iframe":
-				add(attr(n, "src"), "iframe", "html")
+				add(n, attr(n, "src"), "iframe", "html")
 			case "video":
-				add(attr(n, "src"), "video", "video")
+				add(n, attr(n, "src"), "video", "video")
 			case "audio":
-				add(attr(n, "src"), "audio", "audio")
+				add(n, attr(n, "src"), "audio", "audio")
 			case "track":
-				add(attr(n, "src"), "track", "vtt")
+				add(n, attr(n, "src"), "track", "vtt")
 			case "embed":
-				add(attr(n, "src"), "embed", "")
+				add(n, attr(n, "src"), "embed", "")
 			case "object":
-				add(attr(n, "data"), "object", "")
+				add(n, attr(n, "data"), "object", "")
 			}
 		}
 		for child := n.FirstChild; child != nil; child = child.NextSibling {
@@ -157,6 +164,113 @@ func (s *GraphService) Extract(doc *domain.Document) []domain.RawLink {
 	traverse(root)
 
 	return links
+}
+
+// Document regions a reference can sit in. header and footer are the
+// document-level landmarks (the site chrome); in HTML they live inside the
+// body, but only a landmark that is not nested in a content section counts as
+// global chrome.
+const (
+	containerHead   = "head"
+	containerHeader = "header"
+	containerBody   = "body"
+	containerFooter = "footer"
+)
+
+// Reference roles. Resource is used for non-hyperlink references (stylesheets,
+// scripts, images, ...); the rest describe the purpose of a hyperlink. A site
+// can override the role with the linkRoleAttr attribute.
+const (
+	roleGlobal   = "global"
+	roleNav      = "nav"
+	roleContent  = "content"
+	roleResource = "resource"
+)
+
+// linkRoleAttr is the attribute a site can set on a referencing element to
+// override the derived role (e.g. data-audit-role="injected").
+const linkRoleAttr = "data-audit-role"
+
+// classifyContainer returns the document region the node sits in.
+func classifyContainer(n *html.Node) string {
+	var chain []*html.Node
+	for p := n.Parent; p != nil; p = p.Parent {
+		chain = append(chain, p)
+	}
+	for i, a := range chain {
+		if a.Type != html.ElementNode {
+			continue
+		}
+		switch strings.ToLower(a.Data) {
+		case "head":
+			return containerHead
+		case "body":
+			return containerBody
+		case "header":
+			if hasRole(a, "banner") || !insideContentSection(chain[i+1:]) {
+				return containerHeader
+			}
+		case "footer":
+			if hasRole(a, "contentinfo") || !insideContentSection(chain[i+1:]) {
+				return containerFooter
+			}
+		}
+	}
+	return containerBody
+}
+
+// classifyRole returns the purpose of a reference: non-hyperlink references are
+// resources, hyperlinks are navigational in the site chrome or a nav and
+// content otherwise.
+func classifyRole(n *html.Node, container, linkType string) string {
+	if linkType != "hyperlink" {
+		return roleResource
+	}
+	switch container {
+	case containerHead:
+		return roleGlobal
+	case containerHeader, containerFooter:
+		return roleNav
+	}
+	if hasAncestorElement(n, "nav") {
+		return roleNav
+	}
+	return roleContent
+}
+
+// insideContentSection reports whether any of the ancestors is a sectioning
+// element that makes a landmark page-local rather than global chrome.
+func insideContentSection(ancestors []*html.Node) bool {
+	for _, a := range ancestors {
+		if a.Type != html.ElementNode {
+			continue
+		}
+		switch strings.ToLower(a.Data) {
+		case "article", "section", "aside", "main":
+			return true
+		}
+	}
+	return false
+}
+
+// hasRole reports whether the node carries the given explicit ARIA role.
+func hasRole(n *html.Node, role string) bool {
+	for _, r := range strings.Fields(strings.ToLower(attr(n, "role"))) {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAncestorElement reports whether an ancestor element has the given name.
+func hasAncestorElement(n *html.Node, name string) bool {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type == html.ElementNode && strings.EqualFold(p.Data, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // attr returns the value of the named attribute, empty when absent.
@@ -171,13 +285,13 @@ func attr(n *html.Node, key string) string {
 
 // addSrcset feeds every URL candidate of a srcset attribute to add. Each
 // candidate is "url [descriptor]"; the descriptor is ignored.
-func addSrcset(value string, add func(raw, linkType, filetypeHint string)) {
+func addSrcset(n *html.Node, value string, add func(*html.Node, string, string, string)) {
 	for _, candidate := range strings.Split(value, ",") {
 		fields := strings.Fields(strings.TrimSpace(candidate))
 		if len(fields) == 0 {
 			continue
 		}
-		add(fields[0], "image", "image")
+		add(n, fields[0], "image", "image")
 	}
 }
 
@@ -338,6 +452,8 @@ func (s *GraphService) Persist(ctx context.Context, tx *gorm.DB, auditID string,
 
 	edgeCount := make(map[string]int)
 	edgeType := make(map[string]string)
+	edgeContainer := make(map[string]string)
+	edgeRole := make(map[string]string)
 	edgeSource := make(map[string]string)
 	edgeTarget := make(map[string]string)
 
@@ -360,9 +476,11 @@ func (s *GraphService) Persist(ctx context.Context, tx *gorm.DB, auditID string,
 			if target == nil {
 				continue
 			}
-			id := store.GraphEdgeID(auditID, source.ID, target.ID, link.Type)
+			id := store.GraphEdgeID(auditID, source.ID, target.ID, link.Type, link.Container, link.Role)
 			edgeCount[id]++
 			edgeType[id] = link.Type
+			edgeContainer[id] = link.Container
+			edgeRole[id] = link.Role
 			edgeSource[id] = source.ID
 			edgeTarget[id] = target.ID
 			source.OutLinks++
@@ -413,6 +531,8 @@ func (s *GraphService) Persist(ctx context.Context, tx *gorm.DB, auditID string,
 			SourceNodeID: edgeSource[id],
 			TargetNodeID: edgeTarget[id],
 			Type:         edgeType[id],
+			Container:    edgeContainer[id],
+			Role:         edgeRole[id],
 			Count:        count,
 		}))
 	}
@@ -550,6 +670,12 @@ func (s *GraphService) ListEdges(ctx context.Context, auditID string, f domain.G
 		if len(f.Types) > 0 {
 			q = q.Where("e.edge_type IN ?", f.Types)
 		}
+		if len(f.Containers) > 0 {
+			q = q.Where("e.container IN ?", f.Containers)
+		}
+		if len(f.Roles) > 0 {
+			q = q.Where("e.role IN ?", f.Roles)
+		}
 		if f.SourceNodeID != "" {
 			q = q.Where("e.source_node_id = ?", f.SourceNodeID)
 		}
@@ -572,7 +698,7 @@ func (s *GraphService) ListEdges(ctx context.Context, auditID string, f domain.G
 
 	var rows []store.GraphEdgeRow
 	err := base().
-		Select("e.id AS id, e.edge_type AS type, e.count AS count, " +
+		Select("e.id AS id, e.edge_type AS type, e.container AS container, e.role AS role, e.count AS count, " +
 			"e.source_node_id AS source_node_id, s.url AS source_url, s.filetype AS source_filetype, " +
 			"e.target_node_id AS target_node_id, t.url AS target_url, t.filetype AS target_filetype, t.external AS target_external").
 		Order(edgeOrder(f.Sort, f.Order)).
@@ -608,8 +734,10 @@ func (s *GraphService) GetNode(ctx context.Context, auditID, nodeID string) (*do
 // distributions.
 func (s *GraphService) Summary(ctx context.Context, auditID string) (*domain.GraphSummary, error) {
 	sum := &domain.GraphSummary{
-		Filetypes: []domain.FiletypeCount{},
-		Statuses:  []domain.StatusCodeCount{},
+		Filetypes:  []domain.FiletypeCount{},
+		Statuses:   []domain.StatusCodeCount{},
+		Containers: []domain.ContainerCount{},
+		Roles:      []domain.RoleCount{},
 	}
 	if s == nil || s.db == nil {
 		return sum, nil
@@ -662,6 +790,40 @@ func (s *GraphService) Summary(ctx context.Context, auditID string) (*domain.Gra
 	}
 	for _, b := range statusBuckets {
 		sum.Statuses = append(sum.Statuses, domain.StatusCodeCount{StatusCode: b.StatusCode, Count: b.Count})
+	}
+
+	type containerBucket struct {
+		Container string
+		Count     int
+	}
+	var containerBuckets []containerBucket
+	if err := db.Model(&store.GraphEdge{}).
+		Select("container AS container, COUNT(*) AS count").
+		Where("audit_id = ?", auditID).
+		Group("container").
+		Order("count DESC").
+		Scan(&containerBuckets).Error; err != nil {
+		return nil, err
+	}
+	for _, b := range containerBuckets {
+		sum.Containers = append(sum.Containers, domain.ContainerCount{Container: b.Container, Count: b.Count})
+	}
+
+	type roleBucket struct {
+		Role  string
+		Count int
+	}
+	var roleBuckets []roleBucket
+	if err := db.Model(&store.GraphEdge{}).
+		Select("role AS role, COUNT(*) AS count").
+		Where("audit_id = ?", auditID).
+		Group("role").
+		Order("count DESC").
+		Scan(&roleBuckets).Error; err != nil {
+		return nil, err
+	}
+	for _, b := range roleBuckets {
+		sum.Roles = append(sum.Roles, domain.RoleCount{Role: b.Role, Count: b.Count})
 	}
 
 	sum.TotalNodes = int(nodeCount)
@@ -726,6 +888,10 @@ func edgeOrder(sortField, order string) string {
 		return "t.url " + dir
 	case "type":
 		return "e.edge_type " + dir + ", s.url ASC"
+	case "container":
+		return "e.container " + dir + ", s.url ASC"
+	case "role":
+		return "e.role " + dir + ", s.url ASC"
 	default:
 		return "s.url " + dir + ", t.url ASC"
 	}

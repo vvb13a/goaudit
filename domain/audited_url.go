@@ -154,6 +154,8 @@ func (s UrlSummary) PassedCount() int { return s.SeverityCounts.Passed() }
 type AuditedUrl struct {
 	URL         string        `json:"url"`
 	FinalURL    string        `json:"final_url"`
+	Title       string        `json:"title"`
+	EditURL     string        `json:"edit_url"`
 	StatusCode  int           `json:"status_code"`
 	Duration    time.Duration `json:"duration"`
 	State       UrlState      `json:"state"`

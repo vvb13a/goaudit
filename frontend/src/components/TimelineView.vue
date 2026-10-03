@@ -10,10 +10,12 @@ import { useRoute, useRouter } from 'vue-router'
 import * as api from '../api/client'
 import { dataVersion } from '../lib/appState'
 import { formatDuration } from '../lib/format'
+import { useColumnLayout } from '../lib/columnLayout'
 import { useDelayedLoading } from '../lib/loading'
 import { auditScoreColor, palette } from '../lib/theme'
 import type { AuditSnapshot, GraphSnapshot } from '../types'
 import BarChart, { type Bar } from './BarChart.vue'
+import ColumnToggle from './ColumnToggle.vue'
 
 const props = defineProps<{ auditId: string }>()
 
@@ -35,6 +37,39 @@ let requestId = 0
 const first = ref(0)
 const rows = ref(25)
 const pageSizeOptions = [10, 25, 50, 100]
+
+const {
+  labels: checkColumnLabels,
+  columnOrder: checkColumnOrder,
+  visibleFields: checkVisibleFields,
+  visibleOrderedFields: checkVisibleOrderedFields,
+  columnsKey: checkColumnsKey,
+  reset: resetCheckColumns,
+} = useColumnLayout('timeline-checks', [
+  { field: 'time', label: 'Time' },
+  { field: 'score', label: 'Score' },
+  { field: 'urls', label: 'URLs' },
+  { field: 'issues', label: 'Issues' },
+  { field: 'criticals', label: 'Criticals' },
+  { field: 'duration', label: 'Duration' },
+])
+
+const {
+  labels: graphColumnLabels,
+  columnOrder: graphColumnOrder,
+  visibleFields: graphVisibleFields,
+  visibleOrderedFields: graphVisibleOrderedFields,
+  columnsKey: graphColumnsKey,
+  reset: resetGraphColumns,
+} = useColumnLayout('timeline-graph', [
+  { field: 'time', label: 'Time' },
+  { field: 'nodes', label: 'Nodes' },
+  { field: 'edges', label: 'Edges' },
+  { field: 'internal', label: 'Internal' },
+  { field: 'external', label: 'External' },
+  { field: 'roots', label: 'Roots' },
+  { field: 'duration', label: 'Duration' },
+])
 
 function formatTime(iso: string): string {
   const date = new Date(iso)
@@ -328,6 +363,7 @@ watch(dataVersion, () => {
     <div class="min-h-0 flex-1">
       <DataTable
         v-if="scope === 'checks'"
+        :key="checkColumnsKey"
         v-model:first="first"
         v-model:rows="rows"
         :value="checkRows"
@@ -343,6 +379,12 @@ watch(dataVersion, () => {
         </template>
         <template #paginatorend>
           <div class="flex items-center gap-1 text-sm text-slate-500">
+            <ColumnToggle
+              v-model:order="checkColumnOrder"
+              v-model:visible="checkVisibleFields"
+              :labels="checkColumnLabels"
+              @reset="resetCheckColumns"
+            />
             <Button
               label="Refresh"
               text
@@ -371,12 +413,13 @@ watch(dataVersion, () => {
           </p>
         </template>
 
-        <Column field="time" header="Time" style="min-width: 11rem">
+        <template v-for="field in checkVisibleOrderedFields" :key="field">
+        <Column v-if="field === 'time'" field="time" header="Time" style="min-width: 11rem">
           <template #body="{ data }">
             <span class="text-sm text-slate-700">{{ data.time }}</span>
           </template>
         </Column>
-        <Column field="score" header="Score" style="min-width: 7rem">
+        <Column v-else-if="field === 'score'" field="score" header="Score" style="min-width: 7rem">
           <template #body="{ data }">
             <span
               class="font-semibold tabular-nums"
@@ -386,17 +429,17 @@ watch(dataVersion, () => {
             </span>
           </template>
         </Column>
-        <Column field="urls" header="URLs" style="min-width: 9rem">
+        <Column v-else-if="field === 'urls'" field="urls" header="URLs" style="min-width: 9rem">
           <template #body="{ data }">
             <span class="tabular-nums text-slate-600">{{ data.urls }}</span>
           </template>
         </Column>
-        <Column field="issues" header="Issues" style="min-width: 10rem">
+        <Column v-else-if="field === 'issues'" field="issues" header="Issues" style="min-width: 10rem">
           <template #body="{ data }">
             <span class="tabular-nums text-slate-600">{{ data.issues }}</span>
           </template>
         </Column>
-        <Column field="criticals" header="Criticals" style="min-width: 8rem">
+        <Column v-else-if="field === 'criticals'" field="criticals" header="Criticals" style="min-width: 8rem">
           <template #body="{ data }">
             <span
               class="tabular-nums"
@@ -408,15 +451,17 @@ watch(dataVersion, () => {
             </span>
           </template>
         </Column>
-        <Column field="duration" header="Duration" style="min-width: 8rem">
+        <Column v-else-if="field === 'duration'" field="duration" header="Duration" style="min-width: 8rem">
           <template #body="{ data }">
             <span class="tabular-nums text-slate-600">{{ data.duration }}</span>
           </template>
         </Column>
+        </template>
       </DataTable>
 
       <DataTable
         v-else
+        :key="graphColumnsKey"
         v-model:first="first"
         v-model:rows="rows"
         :value="graphRows"
@@ -432,6 +477,12 @@ watch(dataVersion, () => {
         </template>
         <template #paginatorend>
           <div class="flex items-center gap-1 text-sm text-slate-500">
+            <ColumnToggle
+              v-model:order="graphColumnOrder"
+              v-model:visible="graphVisibleFields"
+              :labels="graphColumnLabels"
+              @reset="resetGraphColumns"
+            />
             <Button
               label="Refresh"
               text
@@ -460,41 +511,43 @@ watch(dataVersion, () => {
           </p>
         </template>
 
-        <Column field="time" header="Time" style="min-width: 11rem">
+        <template v-for="field in graphVisibleOrderedFields" :key="field">
+        <Column v-if="field === 'time'" field="time" header="Time" style="min-width: 11rem">
           <template #body="{ data }">
             <span class="text-sm text-slate-700">{{ data.time }}</span>
           </template>
         </Column>
-        <Column field="nodes" header="Nodes" style="min-width: 7rem">
+        <Column v-else-if="field === 'nodes'" field="nodes" header="Nodes" style="min-width: 7rem">
           <template #body="{ data }">
             <span class="tabular-nums text-slate-600">{{ data.nodes }}</span>
           </template>
         </Column>
-        <Column field="edges" header="Edges" style="min-width: 7rem">
+        <Column v-else-if="field === 'edges'" field="edges" header="Edges" style="min-width: 7rem">
           <template #body="{ data }">
             <span class="tabular-nums text-slate-600">{{ data.edges }}</span>
           </template>
         </Column>
-        <Column field="internal" header="Internal" style="min-width: 7rem">
+        <Column v-else-if="field === 'internal'" field="internal" header="Internal" style="min-width: 7rem">
           <template #body="{ data }">
             <span class="tabular-nums text-slate-600">{{ data.internal }}</span>
           </template>
         </Column>
-        <Column field="external" header="External" style="min-width: 7rem">
+        <Column v-else-if="field === 'external'" field="external" header="External" style="min-width: 7rem">
           <template #body="{ data }">
             <span class="tabular-nums text-slate-600">{{ data.external }}</span>
           </template>
         </Column>
-        <Column field="roots" header="Roots" style="min-width: 6rem">
+        <Column v-else-if="field === 'roots'" field="roots" header="Roots" style="min-width: 6rem">
           <template #body="{ data }">
             <span class="tabular-nums text-slate-600">{{ data.roots }}</span>
           </template>
         </Column>
-        <Column field="duration" header="Duration" style="min-width: 8rem">
+        <Column v-else-if="field === 'duration'" field="duration" header="Duration" style="min-width: 8rem">
           <template #body="{ data }">
             <span class="tabular-nums text-slate-600">{{ data.duration }}</span>
           </template>
         </Column>
+        </template>
       </DataTable>
     </div>
   </div>

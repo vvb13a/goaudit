@@ -41,6 +41,9 @@ func Open(path string) (*gorm.DB, error) {
 	if err := migrateGraphNodeValidation(db); err != nil {
 		return nil, fmt.Errorf("migrate graph node validation: %w", err)
 	}
+	if err := migrateGraphEdgeContext(db); err != nil {
+		return nil, fmt.Errorf("migrate graph edge context: %w", err)
+	}
 
 	return db, nil
 }

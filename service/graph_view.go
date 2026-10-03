@@ -95,6 +95,8 @@ func (s *GraphService) BuildView(a *domain.Audit, statuses map[string]store.Link
 				SourceURL: source,
 				TargetURL: target,
 				Type:      link.Type,
+				Container: link.Container,
+				Role:      link.Role,
 			})
 			if _, ok := view.targets[target]; ok {
 				continue

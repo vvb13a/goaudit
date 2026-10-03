@@ -211,6 +211,10 @@ func (r *Runner) auditURL(ctx context.Context, fetcher *Fetcher, targetURL strin
 	u.FinalURL = doc.FinalURL
 	u.StatusCode = doc.StatusCode
 	u.Duration = doc.Duration
+	if doc.IsHTML() {
+		u.Title = extractTitle(doc.Body)
+		u.EditURL = extractEditLink(doc)
+	}
 
 	if extractGraph && r.graph != nil {
 		u.Links = r.graph.Extract(doc)

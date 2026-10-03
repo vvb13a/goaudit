@@ -19,8 +19,10 @@ import { useRouter, type LocationQuery } from 'vue-router'
 import * as api from '../api/client'
 import { filetypeClass } from '../lib/graph'
 import { useDelayedLoading } from '../lib/loading'
+import { useColumnLayout } from '../lib/columnLayout'
 import { useTableQuery } from '../lib/tableQuery'
-import type { GraphEdgeQuery, GraphEdgeRow } from '../types'
+import type { ContainerCount, GraphEdgeQuery, GraphEdgeRow, RoleCount } from '../types'
+import ColumnToggle from './ColumnToggle.vue'
 import EmptyState from './EmptyState.vue'
 
 const props = defineProps<{
@@ -59,6 +61,8 @@ const menuItems = computed(() => [
 
 const items = ref<GraphEdgeRow[]>([])
 const total = ref(0)
+const containers = ref<ContainerCount[]>([])
+const roles = ref<RoleCount[]>([])
 const loading = ref(false)
 const showTableLoading = useDelayedLoading(loading)
 const error = ref<string | null>(null)
@@ -83,6 +87,34 @@ const edgeTypeOptions = [
   'preload',
 ].map((t) => ({ label: t, value: t }))
 
+const containerOptions = computed(() =>
+  containers.value.map((c) => ({
+    label: `${c.container || '–'} (${c.count.toLocaleString()})`,
+    value: c.container,
+  })),
+)
+
+const roleOptions = computed(() =>
+  roles.value.map((r) => ({
+    label: `${r.role || '–'} (${r.count.toLocaleString()})`,
+    value: r.role,
+  })),
+)
+
+const {
+  labels: columnLabels,
+  columnOrder,
+  visibleFields,
+  visibleOrderedFields,
+  columnsKey,
+  reset: resetColumns,
+} = useColumnLayout(`graph-node-edges-${props.prefix}`, [
+  { field: 'node', label: 'Node' },
+  { field: 'type', label: 'Type' },
+  { field: 'container', label: 'Container' },
+  { field: 'role', label: 'Role' },
+])
+
 type MatchMode = 'in' | 'contains'
 interface ColumnFilter {
   value: unknown
@@ -93,6 +125,8 @@ function defaultFilters(): Record<string, ColumnFilter> {
   return {
     node: { value: null, matchMode: 'contains' },
     type: { value: null, matchMode: 'in' },
+    container: { value: null, matchMode: 'in' },
+    role: { value: null, matchMode: 'in' },
   }
 }
 
@@ -101,6 +135,8 @@ const filters = ref<DataTableFilterMeta>(defaultFilters())
 const keys = [
   `${props.prefix}_node`,
   `${props.prefix}_type`,
+  `${props.prefix}_container`,
+  `${props.prefix}_role`,
   `${props.prefix}_sort`,
   `${props.prefix}_order`,
   `${props.prefix}_page`,
@@ -156,9 +192,22 @@ function applyQuery(query: LocationQuery): void {
       value: list(`${props.prefix}_type`).length ? list(`${props.prefix}_type`) : null,
       matchMode: 'in',
     },
+    container: {
+      value: list(`${props.prefix}_container`).length
+        ? list(`${props.prefix}_container`)
+        : null,
+      matchMode: 'in',
+    },
+    role: {
+      value: list(`${props.prefix}_role`).length ? list(`${props.prefix}_role`) : null,
+      matchMode: 'in',
+    },
   }
   const sort = single(`${props.prefix}_sort`)
-  sortField.value = sort === 'node' || sort === 'type' ? sort : undefined
+  sortField.value =
+    sort === 'node' || sort === 'type' || sort === 'container' || sort === 'role'
+      ? sort
+      : undefined
   const order = single(`${props.prefix}_order`)
   sortOrder.value = order === 'asc' ? 1 : order === 'desc' ? -1 : undefined
   const page = Number(single(`${props.prefix}_page`))
@@ -171,6 +220,10 @@ function serializeQuery(): Record<string, string> {
   if (node) query[`${props.prefix}_node`] = node
   const types = selectedValues('type')
   if (types.length) query[`${props.prefix}_type`] = types.join(',')
+  const containers = selectedValues('container')
+  if (containers.length) query[`${props.prefix}_container`] = containers.join(',')
+  const roles = selectedValues('role')
+  if (roles.length) query[`${props.prefix}_role`] = roles.join(',')
   if (sortField.value) query[`${props.prefix}_sort`] = sortField.value
   if (sortOrder.value === 1) query[`${props.prefix}_order`] = 'asc'
   else if (sortOrder.value === -1) query[`${props.prefix}_order`] = 'desc'
@@ -193,6 +246,8 @@ async function load(): Promise<void> {
     sort: apiSort(),
     order: currentOrder(),
     types: selectedValues('type'),
+    containers: selectedValues('container'),
+    roles: selectedValues('role'),
   }
   const node = textValue('node')
   if (props.direction === 'out') {
@@ -204,8 +259,13 @@ async function load(): Promise<void> {
   }
 
   try {
-    const data = await api.listGraphEdges(id, query)
+    const [summary, data] = await Promise.all([
+      api.getGraphSummary(id),
+      api.listGraphEdges(id, query),
+    ])
     if (request !== requestId) return
+    containers.value = summary.containers
+    roles.value = summary.roles
     items.value = data.items
     total.value = data.total
   } catch (e) {
@@ -328,6 +388,7 @@ watch(
     <Message v-if="error" severity="error" class="mb-2">{{ error }}</Message>
 
     <DataTable
+      :key="columnsKey"
       v-model:filters="filters"
       v-model:first="first"
       v-model:rows="rows"
@@ -360,6 +421,12 @@ watch(
           <Button label="Clear" text size="small" @click="resetFilters">
             <template #icon><FilterSlash :size="16" /></template>
           </Button>
+          <ColumnToggle
+            v-model:order="columnOrder"
+            v-model:visible="visibleFields"
+            :labels="columnLabels"
+            @reset="resetColumns"
+          />
           <Button
             label="Refresh"
             text
@@ -383,7 +450,9 @@ watch(
         <EmptyState v-if="!loading" @reset="resetFilters" />
       </template>
 
+      <template v-for="field in visibleOrderedFields" :key="field">
       <Column
+        v-if="field === 'node'"
         field="node"
         header="Node"
         sortable
@@ -425,6 +494,7 @@ watch(
       </Column>
 
       <Column
+        v-else-if="field === 'type'"
         field="type"
         header="Type"
         sortable
@@ -449,6 +519,61 @@ watch(
           />
         </template>
       </Column>
+
+      <Column
+        v-else-if="field === 'container'"
+        field="container"
+        header="Container"
+        sortable
+        filter-match-mode="in"
+        :show-filter-match-modes="false"
+        :filter-menu-style="{ minWidth: '13rem' }"
+        style="min-width: 6rem"
+      >
+        <template #body="{ data }">
+          <span class="text-sm capitalize">{{ data.container || '–' }}</span>
+        </template>
+        <template #filter="{ filterModel, filterCallback }">
+          <MultiSelect
+            v-model="filterModel.value"
+            :options="containerOptions"
+            option-label="label"
+            option-value="value"
+            placeholder="Any"
+            :show-clear="true"
+            class="w-full"
+            @change="filterCallback()"
+          />
+        </template>
+      </Column>
+
+      <Column
+        v-else-if="field === 'role'"
+        field="role"
+        header="Role"
+        sortable
+        filter-match-mode="in"
+        :show-filter-match-modes="false"
+        :filter-menu-style="{ minWidth: '13rem' }"
+        style="min-width: 6rem"
+      >
+        <template #body="{ data }">
+          <span class="text-sm capitalize">{{ data.role || '–' }}</span>
+        </template>
+        <template #filter="{ filterModel, filterCallback }">
+          <MultiSelect
+            v-model="filterModel.value"
+            :options="roleOptions"
+            option-label="label"
+            option-value="value"
+            placeholder="Any"
+            :show-clear="true"
+            class="w-full"
+            @change="filterCallback()"
+          />
+        </template>
+      </Column>
+      </template>
     </DataTable>
 
     <ContextMenu ref="menu" :model="menuItems" @hide="menuEdge = null" />

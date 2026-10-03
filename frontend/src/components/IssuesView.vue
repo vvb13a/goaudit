@@ -49,10 +49,12 @@ import {
 import { timeAgo } from '../lib/format'
 import { dataVersion, notifyDataChanged } from '../lib/appState'
 import { useCheckMeta } from '../lib/checkMeta'
+import { useColumnLayout } from '../lib/columnLayout'
 import { useDelayedLoading } from '../lib/loading'
 import { loadJSON, saveJSON } from '../lib/storage'
 import { useTableQuery } from '../lib/tableQuery'
 import type { Issue, SeverityCounts } from '../types'
+import ColumnToggle from './ColumnToggle.vue'
 import EmptyState from './EmptyState.vue'
 import MetricTile from './MetricTile.vue'
 import SeverityTag from './SeverityTag.vue'
@@ -161,6 +163,22 @@ const checkOptions = computed(() =>
 )
 
 const pageSizeOptions = [10, 25, 50, 100]
+
+const {
+  labels: columnLabels,
+  columnOrder,
+  visibleFields,
+  visibleOrderedFields,
+  columnsKey,
+  reset: resetColumns,
+} = useColumnLayout('issues', [
+  { field: 'severity', label: 'Severity' },
+  { field: 'lifecycle', label: 'Lifecycle' },
+  { field: 'check', label: 'Check' },
+  { field: 'category', label: 'Category' },
+  { field: 'url', label: 'URL' },
+  { field: 'message', label: 'Issue' },
+])
 
 const pageReport = computed(() => {
   if (total.value === 0) return '0 of 0'
@@ -677,6 +695,7 @@ onBeforeUnmount(() => {
       aria-label="Issues"
     >
       <DataTable
+        :key="columnsKey"
         v-model:filters="filters"
         v-model:first="first"
         v-model:rows="rows"
@@ -709,6 +728,12 @@ onBeforeUnmount(() => {
             <Button label="Clear" text size="small" @click="resetFilters">
               <template #icon><FilterSlash :size="16" /></template>
             </Button>
+            <ColumnToggle
+              v-model:order="columnOrder"
+              v-model:visible="visibleFields"
+              :labels="columnLabels"
+              @reset="resetColumns"
+            />
             <Button
               label="Refresh"
               text
@@ -734,7 +759,9 @@ onBeforeUnmount(() => {
           <EmptyState v-if="!loading" @reset="resetFilters" />
         </template>
 
+        <template v-for="field in visibleOrderedFields" :key="field">
         <Column
+          v-if="field === 'severity'"
           field="severity"
           header="Severity"
           sortable
@@ -761,6 +788,7 @@ onBeforeUnmount(() => {
         </Column>
 
         <Column
+          v-else-if="field === 'lifecycle'"
           field="lifecycle"
           header="Lifecycle"
           sortable
@@ -795,6 +823,7 @@ onBeforeUnmount(() => {
         </Column>
 
         <Column
+          v-else-if="field === 'check'"
           field="check"
           header="Check"
           sortable
@@ -827,6 +856,7 @@ onBeforeUnmount(() => {
         </Column>
 
         <Column
+          v-else-if="field === 'category'"
           field="category"
           header="Category"
           sortable
@@ -855,6 +885,7 @@ onBeforeUnmount(() => {
         </Column>
 
         <Column
+          v-else-if="field === 'url'"
           field="url"
           sortable
           filter-match-mode="contains"
@@ -915,6 +946,7 @@ onBeforeUnmount(() => {
         </Column>
 
         <Column
+          v-else-if="field === 'message'"
           field="message"
           header="Issue"
           sortable
@@ -937,6 +969,7 @@ onBeforeUnmount(() => {
             />
           </template>
         </Column>
+        </template>
       </DataTable>
     </div>
 

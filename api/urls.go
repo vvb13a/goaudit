@@ -13,6 +13,8 @@ import (
 type urlRow struct {
 	URL             string                `json:"url"`
 	FinalURL        string                `json:"final_url"`
+	Title           string                `json:"title"`
+	EditURL         string                `json:"edit_url"`
 	StatusCode      int                   `json:"status_code"`
 	DurationMs      int64                 `json:"duration_ms"`
 	State           string                `json:"state"`
@@ -92,6 +94,8 @@ func (s *Server) handleListURLs(w http.ResponseWriter, r *http.Request) {
 		items = append(items, urlRow{
 			URL:             u.URL,
 			FinalURL:        u.FinalURL,
+			Title:           u.Title,
+			EditURL:         u.EditURL,
 			StatusCode:      u.StatusCode,
 			DurationMs:      u.Duration.Milliseconds(),
 			State:           string(u.State),

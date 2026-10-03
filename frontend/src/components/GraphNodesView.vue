@@ -21,8 +21,10 @@ import * as api from '../api/client'
 import { dataVersion } from '../lib/appState'
 import { useDelayedLoading } from '../lib/loading'
 import { filetypeClass } from '../lib/graph'
+import { useColumnLayout } from '../lib/columnLayout'
 import { useTableQuery } from '../lib/tableQuery'
 import type { FiletypeCount, GraphNode, StatusCodeCount } from '../types'
+import ColumnToggle from './ColumnToggle.vue'
 import EmptyState from './EmptyState.vue'
 
 const props = defineProps<{ auditId: string }>()
@@ -168,6 +170,25 @@ const statusOptions = computed(() =>
     value: s.status_code,
   })),
 )
+
+const {
+  labels: columnLabels,
+  columnOrder,
+  visibleFields,
+  visibleOrderedFields,
+  columnsKey,
+  reset: resetColumns,
+} = useColumnLayout('graph-nodes', [
+  { field: 'url', label: 'URL' },
+  { field: 'filetype', label: 'Filetype' },
+  { field: 'external', label: 'Scope' },
+  { field: 'first_seen', label: 'First seen' },
+  { field: 'last_seen', label: 'Last seen' },
+  { field: 'status_code', label: 'Status' },
+  { field: 'last_validated', label: 'Last validated' },
+  { field: 'in_links', label: 'In' },
+  { field: 'out_links', label: 'Out' },
+])
 
 const pageReport = computed(() => {
   if (total.value === 0) return '0 of 0'
@@ -427,6 +448,7 @@ watch(dataVersion, () => {
     <Message v-if="error" severity="error">{{ error }}</Message>
 
     <DataTable
+      :key="columnsKey"
       v-model:filters="filters"
       v-model:first="first"
       v-model:rows="rows"
@@ -457,6 +479,12 @@ watch(dataVersion, () => {
           <Button label="Clear" text size="small" @click="resetFilters">
             <template #icon><FilterSlash :size="16" /></template>
           </Button>
+          <ColumnToggle
+            v-model:order="columnOrder"
+            v-model:visible="visibleFields"
+            :labels="columnLabels"
+            @reset="resetColumns"
+          />
           <Button
             label="Refresh"
             text
@@ -482,7 +510,9 @@ watch(dataVersion, () => {
         <EmptyState v-if="!loading" @reset="resetFilters" />
       </template>
 
+      <template v-for="field in visibleOrderedFields" :key="field">
       <Column
+        v-if="field === 'url'"
         field="url"
         header="URL"
         sortable
@@ -521,6 +551,7 @@ watch(dataVersion, () => {
       </Column>
 
       <Column
+        v-else-if="field === 'filetype'"
         field="filetype"
         header="Filetype"
         sortable
@@ -552,6 +583,7 @@ watch(dataVersion, () => {
       </Column>
 
       <Column
+        v-else-if="field === 'external'"
         field="external"
         header="Scope"
         sortable
@@ -583,6 +615,7 @@ watch(dataVersion, () => {
       </Column>
 
       <Column
+        v-else-if="field === 'first_seen'"
         field="first_seen"
         header="First seen"
         sortable
@@ -611,6 +644,7 @@ watch(dataVersion, () => {
       </Column>
 
       <Column
+        v-else-if="field === 'last_seen'"
         field="last_seen"
         header="Last seen"
         sortable
@@ -639,6 +673,7 @@ watch(dataVersion, () => {
       </Column>
 
       <Column
+        v-else-if="field === 'status_code'"
         field="status_code"
         header="Status"
         sortable
@@ -667,6 +702,7 @@ watch(dataVersion, () => {
       </Column>
 
       <Column
+        v-else-if="field === 'last_validated'"
         field="last_validated"
         header="Last validated"
         sortable
@@ -694,16 +730,17 @@ watch(dataVersion, () => {
         </template>
       </Column>
 
-      <Column field="in_links" header="In" sortable style="min-width: 5rem">
+      <Column v-else-if="field === 'in_links'" field="in_links" header="In" sortable style="min-width: 5rem">
         <template #body="{ data }">
           <span class="tabular-nums">{{ data.in_links }}</span>
         </template>
       </Column>
-      <Column field="out_links" header="Out" sortable style="min-width: 5rem">
+      <Column v-else-if="field === 'out_links'" field="out_links" header="Out" sortable style="min-width: 5rem">
         <template #body="{ data }">
           <span class="tabular-nums">{{ data.out_links }}</span>
         </template>
       </Column>
+      </template>
     </DataTable>
 
     <ContextMenu ref="menu" :model="menuItems" @hide="menuNode = null" />

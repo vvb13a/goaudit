@@ -20,6 +20,8 @@ type AuditedUrl struct {
 	AuditID         string    `gorm:"column:audit_id;type:text;not null;uniqueIndex:idx_audited_urls_audit_url;index:idx_audited_urls_audit_state,priority:1"`
 	URL             string    `gorm:"column:url;type:text;not null;uniqueIndex:idx_audited_urls_audit_url"`
 	FinalURL        string    `gorm:"column:final_url;type:text;not null"`
+	Title           string    `gorm:"column:title;type:text;not null;default:''"`
+	EditURL         string    `gorm:"column:edit_url;type:text;not null;default:''"`
 	StatusCode      int64     `gorm:"column:status_code"`
 	DurationMs      int64     `gorm:"column:duration_ms"`
 	State           string    `gorm:"column:state;type:text;not null;default:'active';index:idx_audited_urls_audit_state,priority:2"`
@@ -49,6 +51,8 @@ func AuditedUrlModel(auditID string, u *domain.AuditedUrl) *AuditedUrl {
 		AuditID:         auditID,
 		URL:             u.URL,
 		FinalURL:        u.FinalURL,
+		Title:           u.Title,
+		EditURL:         u.EditURL,
 		StatusCode:      int64(u.StatusCode),
 		DurationMs:      u.Duration.Milliseconds(),
 		State:           string(u.State),
@@ -64,6 +68,8 @@ func (m *AuditedUrl) ToDomain() *domain.AuditedUrl {
 	return &domain.AuditedUrl{
 		URL:         m.URL,
 		FinalURL:    m.FinalURL,
+		Title:       m.Title,
+		EditURL:     m.EditURL,
 		StatusCode:  int(m.StatusCode),
 		Duration:    time.Duration(m.DurationMs) * time.Millisecond,
 		State:       domain.UrlState(m.State),

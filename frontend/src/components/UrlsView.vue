@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import {
+  Bars,
+  Cog,
   Directions,
   ExternalLink,
   Eye,
@@ -7,10 +9,12 @@ import {
   Globe,
   Link,
   List,
+  Pencil,
   Play,
   Refresh,
 } from '@primeicons/vue'
 import Button from 'primevue/button'
+import Checkbox from 'primevue/checkbox'
 import Column from 'primevue/column'
 import ContextMenu from 'primevue/contextmenu'
 import DataTable, {
@@ -26,6 +30,7 @@ import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import MultiSelect from 'primevue/multiselect'
+import Popover from 'primevue/popover'
 import Select from 'primevue/select'
 import Skeleton from 'primevue/skeleton'
 import { useToast } from 'primevue/usetoast'
@@ -81,18 +86,27 @@ const aggregates = ref<UrlAggregates>({
 type UrlDisplay = 'full' | 'domain' | 'path'
 
 // Filters, sorting and page live in the URL query; only global preferences
-// (page size, URL display) persist in local storage.
+// (page size, URL display, column layout) persist in local storage.
 interface SavedUrlSettings {
   version: number
   rows: number
   urlDisplay?: UrlDisplay
+  columns?: string[]
+  visibleColumns?: string[]
 }
 
 const SETTINGS_KEY = 'urls-view'
-const SETTINGS_VERSION = 2
+const SETTINGS_VERSION = 3
+// Version 2 introduced urlDisplay; version 3 adds the column layout. Older
+// versions are accepted so their rows/urlDisplay preferences survive.
+const MIN_SETTINGS_VERSION = 2
 const storedSettings = loadJSON<SavedUrlSettings>(SETTINGS_KEY)
 const saved =
-  storedSettings?.version === SETTINGS_VERSION ? storedSettings : null
+  storedSettings &&
+  storedSettings.version >= MIN_SETTINGS_VERSION &&
+  storedSettings.version <= SETTINGS_VERSION
+    ? storedSettings
+    : null
 
 const rows = ref(saved?.rows ?? 25)
 const first = ref(0)
@@ -106,6 +120,85 @@ const urlDisplayOptions: { value: UrlDisplay; title: string; icon: Component }[]
     { value: 'domain', title: 'Show domain and path', icon: Globe },
     { value: 'path', title: 'Show path only', icon: Directions },
   ]
+
+// Column layout. Order and visibility persist with the other global
+// preferences. The DataTable is keyed on the visible, ordered set so any change
+// re-renders the header/body with the new layout.
+const columnDefs = [
+  { field: 'url', label: 'URL' },
+  { field: 'title', label: 'Title' },
+  { field: 'duration', label: 'Duration' },
+  { field: 'state', label: 'State' },
+  { field: 'highest', label: 'Highest' },
+  { field: 'score', label: 'Score' },
+]
+const columnLabels = Object.fromEntries(
+  columnDefs.map((c) => [c.field, c.label]),
+)
+const defaultColumnOrder = columnDefs.map((c) => c.field)
+const knownColumns = new Set(defaultColumnOrder)
+
+// sanitizeColumnOrder keeps only known fields, preserving the saved order and
+// appending any fields a stored layout predates.
+function sanitizeColumnOrder(order: string[] | undefined): string[] {
+  const out = (order ?? []).filter((f) => knownColumns.has(f))
+  for (const f of defaultColumnOrder) {
+    if (!out.includes(f)) out.push(f)
+  }
+  return out
+}
+
+const columnOrder = ref<string[]>(sanitizeColumnOrder(saved?.columns))
+const visibleFields = ref<string[]>(
+  (saved?.visibleColumns ?? defaultColumnOrder).filter((f) =>
+    knownColumns.has(f),
+  ),
+)
+const visibleOrderedFields = computed(() =>
+  columnOrder.value.filter((f) => visibleFields.value.includes(f)),
+)
+const columnsKey = computed(() => visibleOrderedFields.value.join('-'))
+const columnPopover = ref<InstanceType<typeof Popover>>()
+
+const dragIndex = ref<number | null>(null)
+const dragOverIndex = ref<number | null>(null)
+
+function toggleColumns(event: Event): void {
+  columnPopover.value?.toggle(event)
+}
+
+function resetColumns(): void {
+  columnOrder.value = [...defaultColumnOrder]
+  visibleFields.value = [...defaultColumnOrder]
+}
+
+function onColumnDragStart(index: number): void {
+  dragOverIndex.value = index
+  requestAnimationFrame(() => {
+    dragIndex.value = index
+  })
+}
+
+function onColumnDragOver(index: number): void {
+  if (index !== dragIndex.value) dragOverIndex.value = index
+}
+
+function onColumnDragEnd(): void {
+  dragIndex.value = null
+  dragOverIndex.value = null
+}
+
+function onColumnDrop(): void {
+  const from = dragIndex.value
+  const to = dragOverIndex.value
+  if (from !== null && to !== null && from !== to) {
+    const next = [...columnOrder.value]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    columnOrder.value = next
+  }
+  onColumnDragEnd()
+}
 
 // Range bounds are kept outside the DataTable filter model so the numeric
 // min/max pairs survive its filter cloning untouched.
@@ -168,6 +261,12 @@ const pageReport = computed(() => {
 // ---- Drawer state ----
 const drawerVisible = ref(false)
 const activeUrl = ref<UrlRow | null>(null)
+// The drawer header prefers the page title; the full URL is already shown in
+// the detail body, so it is only a fallback for untitled pages.
+const drawerTitle = computed(() => {
+  if (!activeUrl.value) return 'URL'
+  return activeUrl.value.title || displayUrl(activeUrl.value.url)
+})
 const urlIssues = ref<Issue[]>([])
 const loadingIssues = ref(false)
 const selectedIssue = ref<Issue | null>(null)
@@ -206,6 +305,12 @@ const menuItems = computed(() => [
     label: 'Open link',
     icon: ExternalLink,
     command: () => menuUrl.value && openLink(menuUrl.value),
+  },
+  {
+    label: 'Edit page',
+    icon: Pencil,
+    visible: !!menuUrl.value?.edit_url,
+    command: () => menuUrl.value && openEdit(menuUrl.value),
   },
   {
     label: 'Open in Issues',
@@ -491,6 +596,12 @@ function openLink(row: UrlRow): void {
   window.open(row.url, '_blank', 'noopener,noreferrer')
 }
 
+function openEdit(row: UrlRow): void {
+  if (row.edit_url) {
+    window.open(row.edit_url, '_blank', 'noopener,noreferrer')
+  }
+}
+
 async function rerunUrl(row: UrlRow): Promise<void> {
   const id = props.auditId
   if (!id || rerunning.value) return
@@ -690,13 +801,19 @@ watch(dataVersion, () => {
 
 // Only global preferences persist in local storage; filters/sort/page live in
 // the URL.
-watch([rows, urlDisplay], () => {
-  saveJSON(SETTINGS_KEY, {
-    version: SETTINGS_VERSION,
-    rows: rows.value,
-    urlDisplay: urlDisplay.value,
-  })
-})
+watch(
+  [rows, urlDisplay, columnOrder, visibleFields],
+  () => {
+    saveJSON(SETTINGS_KEY, {
+      version: SETTINGS_VERSION,
+      rows: rows.value,
+      urlDisplay: urlDisplay.value,
+      columns: columnOrder.value,
+      visibleColumns: visibleFields.value,
+    })
+  },
+  { deep: true },
+)
 
 onMounted(() => {
   window.addEventListener('keydown', onWindowKeydown)
@@ -729,6 +846,7 @@ onBeforeUnmount(() => {
       aria-label="Audited URLs"
     >
       <DataTable
+        :key="columnsKey"
         v-model:filters="filters"
         v-model:first="first"
         v-model:rows="rows"
@@ -762,6 +880,15 @@ onBeforeUnmount(() => {
               <template #icon><FilterSlash :size="16" /></template>
             </Button>
             <Button
+              label="Columns"
+              text
+              size="small"
+              aria-label="Toggle columns"
+              @click="toggleColumns"
+            >
+              <template #icon><Cog :size="16" /></template>
+            </Button>
+            <Button
               label="Refresh"
               text
               size="small"
@@ -786,7 +913,9 @@ onBeforeUnmount(() => {
           <EmptyState v-if="!loading" @reset="resetFilters" />
         </template>
 
+        <template v-for="field in visibleOrderedFields" :key="field">
         <Column
+          v-if="field === 'url'"
           field="url"
           sortable
           filter-match-mode="contains"
@@ -847,6 +976,26 @@ onBeforeUnmount(() => {
         </Column>
 
         <Column
+          v-else-if="field === 'title'"
+          field="title"
+          header="Title"
+          sortable
+          style="min-width: 16rem"
+        >
+          <template #body="{ data }">
+            <span
+              v-if="data.title"
+              class="block max-w-xs truncate"
+              :title="data.title"
+            >
+              {{ data.title }}
+            </span>
+            <span v-else class="text-slate-400">–</span>
+          </template>
+        </Column>
+
+        <Column
+          v-else-if="field === 'duration'"
           field="duration"
           header="Duration"
           sortable
@@ -881,6 +1030,7 @@ onBeforeUnmount(() => {
         </Column>
 
         <Column
+          v-else-if="field === 'state'"
           field="state"
           header="State"
           sortable
@@ -913,6 +1063,7 @@ onBeforeUnmount(() => {
         </Column>
 
         <Column
+          v-else-if="field === 'highest'"
           field="highest"
           header="Highest"
           sortable
@@ -939,6 +1090,7 @@ onBeforeUnmount(() => {
         </Column>
 
         <Column
+          v-else-if="field === 'score'"
           field="score"
           header="Score"
           sortable
@@ -978,17 +1130,61 @@ onBeforeUnmount(() => {
             </div>
           </template>
         </Column>
+        </template>
       </DataTable>
     </div>
 
     <ContextMenu ref="menu" :model="menuItems" @hide="menuUrl = null" />
+
+    <Popover ref="columnPopover" class="w-56" pt:content="p-0!">
+      <div
+        class="flex items-center justify-between gap-2 border-b border-slate-200 px-3 py-2"
+      >
+        <span class="text-sm font-semibold text-slate-700">Columns</span>
+        <Button label="Reset" text size="small" @click="resetColumns" />
+      </div>
+      <div
+        class="max-h-80 overflow-auto py-1"
+        @dragover.prevent
+        @drop="onColumnDrop"
+      >
+        <div
+          v-for="(field, index) in columnOrder"
+          :key="field"
+          class="mx-1 flex cursor-move items-center gap-2 rounded-md px-2 py-1.5 transition select-none"
+          :class="[
+            dragIndex === index ? 'opacity-40' : '',
+            dragOverIndex === index && dragIndex !== index
+              ? 'bg-slate-100 ring-1 ring-slate-300'
+              : 'hover:bg-slate-100',
+          ]"
+          draggable="true"
+          @dragstart="onColumnDragStart(index)"
+          @dragover.prevent="onColumnDragOver(index)"
+          @dragend="onColumnDragEnd"
+        >
+          <span class="flex text-slate-400"><Bars :size="14" /></span>
+          <Checkbox
+            v-model="visibleFields"
+            :value="field"
+            :input-id="`url-col-${field}`"
+          />
+          <label
+            :for="`url-col-${field}`"
+            class="cursor-pointer text-sm text-slate-700"
+          >
+            {{ columnLabels[field] }}
+          </label>
+        </div>
+      </div>
+    </Popover>
 
     <Drawer
       v-model:visible="drawerVisible"
       position="right"
       :modal="false"
       :dismissable="false"
-      :header="activeUrl ? displayUrl(activeUrl.url) : 'URL'"
+      :header="drawerTitle"
       style="width: 56rem; max-width: 96vw"
       @hide="closeDrawer"
     >

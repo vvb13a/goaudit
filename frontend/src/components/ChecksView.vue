@@ -16,15 +16,17 @@ import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import MultiSelect from 'primevue/multiselect'
 import Select from 'primevue/select'
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch, type Ref } from 'vue'
 import { useRouter, type LocationQuery } from 'vue-router'
 import * as api from '../api/client'
 import { categories, categoryLabel, palette, severities } from '../lib/theme'
 import { dataVersion } from '../lib/appState'
+import { useColumnLayout } from '../lib/columnLayout'
 import { useDelayedLoading } from '../lib/loading'
 import { loadJSON, saveJSON } from '../lib/storage'
 import { useTableQuery } from '../lib/tableQuery'
 import type { CheckSummary, SeverityCounts } from '../types'
+import ColumnToggle from './ColumnToggle.vue'
 import EmptyState from './EmptyState.vue'
 import MetricTile from './MetricTile.vue'
 import SeverityTag from './SeverityTag.vue'
@@ -106,6 +108,38 @@ const filters = ref<DataTableFilterMeta>(defaultFilters())
 const categoryOptions = categories.map((c) => ({ label: c.label, value: c.key }))
 const highestOptions = severities.map((s) => ({ label: s.label, value: s.key }))
 const pageSizeOptions = [10, 25, 50, 100]
+
+const countMinBySeverity: Record<string, Ref<number | null>> = {
+  fatal: fatalMin,
+  error: errorMin,
+  warning: warningMin,
+  notice: noticeMin,
+  success: successMin,
+}
+
+function severityMinValue(field: string): number | null {
+  return countMinBySeverity[field]?.value ?? null
+}
+
+function onSeverityInput(field: string, event: { value?: unknown }): void {
+  const countField = `${field}Min` as CountField
+  onCountInput(countField, event)
+}
+
+const {
+  labels: columnLabels,
+  columnOrder,
+  visibleFields,
+  visibleOrderedFields,
+  columnsKey,
+  reset: resetColumns,
+} = useColumnLayout('checks', [
+  { field: 'name', label: 'Check' },
+  { field: 'description', label: 'Description' },
+  { field: 'category', label: 'Category' },
+  { field: 'highest', label: 'Highest' },
+  ...severities.map((s) => ({ field: s.key, label: s.label })),
+])
 
 // Total checks plus one box per severity, counting checks by their highest
 // severity rather than issues.
@@ -406,6 +440,7 @@ onBeforeUnmount(() => {
 
     <div class="min-h-0 flex-1">
       <DataTable
+        :key="columnsKey"
         v-model:filters="filters"
         v-model:first="first"
         v-model:rows="rows"
@@ -438,6 +473,12 @@ onBeforeUnmount(() => {
             <Button label="Clear" text size="small" @click="resetFilters">
               <template #icon><FilterSlash :size="16" /></template>
             </Button>
+            <ColumnToggle
+              v-model:order="columnOrder"
+              v-model:visible="visibleFields"
+              :labels="columnLabels"
+              @reset="resetColumns"
+            />
             <Button
               label="Refresh"
               text
@@ -463,7 +504,9 @@ onBeforeUnmount(() => {
           <EmptyState v-if="!loading" @reset="resetFilters" />
         </template>
 
+        <template v-for="field in visibleOrderedFields" :key="field">
         <Column
+          v-if="field === 'name'"
           field="name"
           header="Check"
           sortable
@@ -487,13 +530,18 @@ onBeforeUnmount(() => {
           </template>
         </Column>
 
-        <Column header="Description" style="min-width: 22rem">
+        <Column
+          v-else-if="field === 'description'"
+          header="Description"
+          style="min-width: 22rem"
+        >
           <template #body="{ data }">
             <span class="text-sm text-slate-600">{{ data.description }}</span>
           </template>
         </Column>
 
         <Column
+          v-else-if="field === 'category'"
           field="category"
           header="Category"
           sortable
@@ -522,6 +570,7 @@ onBeforeUnmount(() => {
         </Column>
 
         <Column
+          v-else-if="field === 'highest'"
           field="highest"
           header="Highest"
           sortable
@@ -552,10 +601,9 @@ onBeforeUnmount(() => {
         </Column>
 
         <Column
-          v-for="sev in severities"
-          :key="sev.key"
-          :field="sev.key"
-          :header="sev.label"
+          v-else
+          :field="field"
+          :header="columnLabels[field]"
           sortable
           :show-filter-match-modes="false"
           :show-apply-button="false"
@@ -565,46 +613,24 @@ onBeforeUnmount(() => {
         >
           <template #body="{ data }">
             <span class="tabular-nums text-slate-600">
-              {{ data.severity[sev.key] }}
+              {{ data.severity[field] }}
             </span>
           </template>
           <template #filter>
             <div class="flex flex-col gap-1">
               <span class="text-xs text-slate-400">Minimum</span>
               <InputNumber
-                :model-value="
-                  sev.key === 'fatal'
-                    ? fatalMin
-                    : sev.key === 'error'
-                      ? errorMin
-                      : sev.key === 'warning'
-                        ? warningMin
-                        : sev.key === 'notice'
-                          ? noticeMin
-                          : successMin
-                "
+                :model-value="severityMinValue(field)"
                 placeholder="≥"
                 :min="0"
                 :use-grouping="false"
                 fluid
-                @input="
-                  onCountInput(
-                    sev.key === 'fatal'
-                      ? 'fatalMin'
-                      : sev.key === 'error'
-                        ? 'errorMin'
-                        : sev.key === 'warning'
-                          ? 'warningMin'
-                          : sev.key === 'notice'
-                            ? 'noticeMin'
-                            : 'successMin',
-                    $event,
-                  )
-                "
+                @input="onSeverityInput(field, $event)"
               />
             </div>
           </template>
         </Column>
+        </template>
       </DataTable>
     </div>
 

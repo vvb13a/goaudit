@@ -98,6 +98,7 @@ type URLSort struct {
 // lexically, so "desc" reads most severe/most recent-state first.
 var urlSortColumns = map[string]string{
 	"url":         "url",
+	"title":       "title",
 	"duration":    "duration_ms",
 	"duration_ms": "duration_ms",
 	"state":       `CASE state WHEN 'new' THEN 0 WHEN 'active' THEN 1 WHEN 'missing' THEN 2 ELSE 3 END`,
